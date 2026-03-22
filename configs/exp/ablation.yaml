@@ -1,0 +1,7 @@
+dataset: gsm8k
+variants:
+  - no_pce
+  - path_only
+  - no_error_head
+  - no_backtrack
+  - no_budget

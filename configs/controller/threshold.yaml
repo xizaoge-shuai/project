@@ -1,0 +1,4 @@
+tau_prune: 0.25
+tau_backtrack: 0.45
+tau_accept: 0.88
+max_backtracks: 2

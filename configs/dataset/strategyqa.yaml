@@ -1,0 +1,5 @@
+name: strategyqa
+task_type: commonsense_qa
+raw_path: data/raw/strategyqa
+processed_path: data/processed/unified/strategyqa.jsonl
+answer_mode: yesno

@@ -1,0 +1,12 @@
+max_features: 4000
+ngram_range: [1, 2]
+min_df: 1
+max_df: 1.0
+lowercase: true
+sublinear_tf: true
+
+C: 1.0
+max_iter: 1000
+class_weight: balanced
+solver: liblinear
+random_state: 42

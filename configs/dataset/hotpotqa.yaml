@@ -1,0 +1,5 @@
+name: hotpotqa
+task_type: multi_hop_qa
+raw_path: data/raw/hotpotqa
+processed_path: data/processed/unified/hotpotqa.jsonl
+answer_mode: span

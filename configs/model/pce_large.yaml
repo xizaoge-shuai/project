@@ -1,0 +1,5 @@
+model_type: mlp
+lr: 5e-4
+epochs: 15
+batch_size: 32
+max_features: 12000

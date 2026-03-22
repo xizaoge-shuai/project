@@ -1,0 +1,3 @@
+dataset: gsm8k
+baselines: [cot, self_consistency, bon, beam_search]
+num_samples: 50

@@ -1,0 +1,4 @@
+generator_sizes: [7, 32, 70]
+pce_sizes: [110, 500, 1500]
+dataset: gsm8k
+level: step

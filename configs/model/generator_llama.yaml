@@ -1,0 +1,35 @@
+backend: vllm            # vllm 或 transformers
+model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+# 通用生成参数
+max_new_tokens: 256
+temperature: 0.7
+top_p: 0.95
+top_k: -1
+repetition_penalty: 1.0
+presence_penalty: 0.0
+frequency_penalty: 0.0
+seed: 42
+
+# 停止条件
+stop:
+  - "\n\nFinal Answer:"
+  - "</s>"
+
+# vLLM 专用
+tensor_parallel_size: 1
+max_model_len: 8192
+gpu_memory_utilization: 0.7
+dtype: auto
+trust_remote_code: true
+enforce_eager: false
+
+# transformers 专用
+device_map: auto
+torch_dtype: auto
+use_fast_tokenizer: true
+
+# 批量生成
+batch_size: 8
+
+# 是否直接返回完整文本；通常建议 false，只返回新增生成部分
+return_full_text: false

@@ -1,0 +1,8 @@
+name: gsm8k
+task_type: math
+raw_path: data/raw/gsm8k
+processed_path: data/processed/unified/gsm8k.jsonl
+answer_mode: numeric
+train_split: 0.8
+val_split: 0.1
+test_split: 0.1

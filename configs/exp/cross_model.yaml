@@ -1,0 +1,4 @@
+train_generator: dummy-a
+test_generator: dummy-b
+dataset: gsm8k
+level: step
