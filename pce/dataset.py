@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from utils.io import read_jsonl
 
@@ -28,10 +28,6 @@ def success_label_dir(
     level: str,
     base_dir: str = "data/processed/labels",
 ) -> Path:
-    """
-    返回 success 标签目录：
-    data/processed/labels/success/{level}_level/{dataset}/
-    """
     norm_level = normalize_level(level)
     return Path(base_dir) / "success" / norm_level / dataset
 
@@ -57,18 +53,45 @@ def discover_split_files(
     return files
 
 
+def attach_prefix_progress(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    对每条 prefix 补充：
+    - trajectory_total_units: 该 trajectory 在当前 level 下总共有多少个 units
+    - prefix_progress: 当前 prefix 走到了整条链的什么位置（0~1）
+    """
+    total_by_traj: Dict[str, int] = {}
+
+    for r in rows:
+        tid = r.get("trajectory_id", "")
+        curr = int(r.get("prefix_num_units", 0))
+        total_by_traj[tid] = max(total_by_traj.get(tid, 0), curr)
+
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        rr = dict(r)
+        tid = rr.get("trajectory_id", "")
+        curr = int(rr.get("prefix_num_units", 0))
+        total = max(total_by_traj.get(tid, curr), 1)
+        rr["trajectory_total_units"] = total
+        rr["prefix_progress"] = float(curr) / float(total)
+        out.append(rr)
+
+    return out
+
+
 def load_pce_training_rows(
     dataset: str,
     level: str,
     splits: Optional[Sequence[str]] = None,
     base_dir: str = "data/processed/labels",
     max_rows: int = -1,
+    min_prefix_progress: float = 0.0,
 ) -> List[Dict[str, Any]]:
-    """
-    加载 success 标签数据，用于训练 PCE。
-    """
     files = discover_split_files(
-        dataset=dataset, level=level, splits=splits, base_dir=base_dir
+        dataset=dataset,
+        level=level,
+        splits=splits,
+        base_dir=base_dir,
     )
 
     rows: List[Dict[str, Any]] = []
@@ -79,6 +102,15 @@ def load_pce_training_rows(
             rr["__source_file"] = str(fp)
             rr["__split"] = fp.stem
             rows.append(rr)
+
+    rows = attach_prefix_progress(rows)
+
+    if min_prefix_progress > 0.0:
+        rows = [
+            r
+            for r in rows
+            if float(r.get("prefix_progress", 0.0)) >= min_prefix_progress
+        ]
 
     if max_rows > 0:
         rows = rows[:max_rows]
@@ -93,6 +125,7 @@ def build_input_text(
     include_question: bool = False,
     include_answer: bool = False,
     include_prefix_len: bool = True,
+    include_prefix_progress: bool = False,
 ) -> str:
     pieces: List[str] = []
 
@@ -115,6 +148,9 @@ def build_input_text(
     if include_prefix_len:
         pieces.append(f"[PREFIX_LEN] {row.get('prefix_num_units', 0)}")
 
+    if include_prefix_progress:
+        pieces.append(f"[PREFIX_PROGRESS] {row.get('prefix_progress', 0.0):.4f}")
+
     return "\n".join(pieces).strip()
 
 
@@ -125,6 +161,7 @@ def build_text_label_pairs(
     include_question: bool = False,
     include_answer: bool = False,
     include_prefix_len: bool = True,
+    include_prefix_progress: bool = False,
 ) -> Tuple[List[str], List[int]]:
     texts: List[str] = []
     labels: List[int] = []
@@ -137,6 +174,7 @@ def build_text_label_pairs(
             include_question=include_question,
             include_answer=include_answer,
             include_prefix_len=include_prefix_len,
+            include_prefix_progress=include_prefix_progress,
         )
         texts.append(txt)
         labels.append(int(r["label_success"]))
@@ -151,16 +189,16 @@ def build_text_label_meta(
     include_question: bool = False,
     include_answer: bool = False,
     include_prefix_len: bool = True,
+    include_prefix_progress: bool = False,
 ) -> Tuple[List[str], List[int], List[Dict[str, Any]]]:
-    """
-    返回 texts, labels, metadata，便于训练后保存预测结果。
-    """
     texts, labels = build_text_label_pairs(
         rows,
         include_task=include_task,
         include_context=include_context,
+        include_question=include_question,
         include_answer=include_answer,
         include_prefix_len=include_prefix_len,
+        include_prefix_progress=include_prefix_progress,
     )
 
     metas: List[Dict[str, Any]] = []
@@ -178,6 +216,8 @@ def build_text_label_meta(
                 "gold_answer": r.get("gold_answer", ""),
                 "final_answer": r.get("final_answer", ""),
                 "prefix_num_units": r.get("prefix_num_units", 0),
+                "trajectory_total_units": r.get("trajectory_total_units", 0),
+                "prefix_progress": r.get("prefix_progress", 0.0),
             }
         )
 

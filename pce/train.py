@@ -31,6 +31,55 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
 
 
+def feature_set_to_kwargs(feature_set: str) -> Dict[str, bool]:
+    if feature_set == "prefix_only":
+        return {
+            "include_task": True,
+            "include_context": False,
+            "include_question": False,
+            "include_answer": False,
+            "include_prefix_len": False,
+            "include_prefix_progress": False,
+        }
+    if feature_set == "prefix_plus_len":
+        return {
+            "include_task": True,
+            "include_context": False,
+            "include_question": False,
+            "include_answer": False,
+            "include_prefix_len": True,
+            "include_prefix_progress": False,
+        }
+    if feature_set == "prefix_plus_question":
+        return {
+            "include_task": True,
+            "include_context": False,
+            "include_question": True,
+            "include_answer": False,
+            "include_prefix_len": True,
+            "include_prefix_progress": False,
+        }
+    if feature_set == "prefix_plus_question_answer":
+        return {
+            "include_task": True,
+            "include_context": False,
+            "include_question": True,
+            "include_answer": True,
+            "include_prefix_len": True,
+            "include_prefix_progress": False,
+        }
+    if feature_set == "prefix_plus_len_progress":
+        return {
+            "include_task": True,
+            "include_context": False,
+            "include_question": False,
+            "include_answer": False,
+            "include_prefix_len": True,
+            "include_prefix_progress": True,
+        }
+    raise ValueError(f"Unsupported feature_set: {feature_set}")
+
+
 def save_json(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -185,6 +234,18 @@ def main() -> None:
         choices=["gsm8k", "strategyqa", "hotpotqa"],
     )
     parser.add_argument(
+    "--feature_set",
+    default="prefix_plus_len",
+    choices=[
+        "prefix_only",
+        "prefix_plus_len",
+        "prefix_plus_question",
+        "prefix_plus_question_answer",
+        "prefix_plus_len_progress",
+    ],
+)
+    parser.add_argument("--min_prefix_progress", type=float, default=0.0)
+    parser.add_argument(
         "--level",
         default="step",
         choices=["path", "step", "atom", "path_level", "step_level", "atom_level"],
@@ -217,38 +278,41 @@ def main() -> None:
     cfg = read_yaml(args.config)
 
     train_rows = load_pce_training_rows(
-        dataset=args.dataset,
-        level=args.level,
-        splits=parse_csv_splits(args.train_splits),
-        base_dir=args.label_base_dir,
+    dataset=args.dataset,
+    level=args.level,
+    splits=parse_csv_splits(args.train_splits),
+    base_dir=args.label_base_dir,
+    min_prefix_progress=args.min_prefix_progress,
     )
     val_rows = load_pce_training_rows(
-        dataset=args.dataset,
-        level=args.level,
-        splits=parse_csv_splits(args.val_splits),
-        base_dir=args.label_base_dir,
+    dataset=args.dataset,
+    level=args.level,
+    splits=parse_csv_splits(args.val_splits),
+    base_dir=args.label_base_dir,
+    min_prefix_progress=args.min_prefix_progress,
     )
     test_rows = load_pce_training_rows(
-        dataset=args.dataset,
-        level=args.level,
-        splits=parse_csv_splits(args.test_splits),
-        base_dir=args.label_base_dir,
+    dataset=args.dataset,
+    level=args.level,
+    splits=parse_csv_splits(args.test_splits),
+    base_dir=args.label_base_dir,
+    min_prefix_progress=args.min_prefix_progress,
     )
-
     if not train_rows:
         raise ValueError("No training rows found.")
 
     # 构造文本
+    feature_kwargs = feature_set_to_kwargs(args.feature_set)
+
     train_texts, train_labels, train_metas = build_text_label_meta(
     train_rows,
-    include_question=False,
-    include_answer=False,
+    **feature_kwargs,
     )
     val_texts, val_labels, val_metas = (
-    build_text_label_meta(val_rows, include_question=False,include_answer=False) if val_rows else ([], [], [])
+    build_text_label_meta(val_rows, **feature_kwargs) if val_rows else ([], [], [])
     )
     test_texts, test_labels, test_metas = (
-    build_text_label_meta(test_rows, include_question=False,include_answer=False) if test_rows else ([], [], [])
+    build_text_label_meta(test_rows, **feature_kwargs) if test_rows else ([], [], [])
     )
 
     # 如果没现成 val/test，就从 train 随机切
@@ -288,6 +352,8 @@ def main() -> None:
         "config": cfg,
         "model_info": pce.info() if hasattr(pce, "info") else {},
     }
+    summary["feature_set"] = args.feature_set
+    summary["min_prefix_progress"] = args.min_prefix_progress
 
     # val 评估
     if val_texts:
