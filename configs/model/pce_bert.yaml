@@ -2,9 +2,9 @@ model_type: bert
 encoder_name: distilbert-base-uncased
 hidden_size: 256
 dropout: 0.1
-lr: 1e-4
+lr: 2e-5
 epochs: 3
 batch_size: 16
 use_success_head: true
-use_error_head: true
-use_repair_head: true
+use_error_head: false
+use_repair_head: false

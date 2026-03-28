@@ -218,6 +218,19 @@ def build_error_diagnosis_prompt(
     )
 
 
+def build_continue_from_prefix_prompt(question: str, prefix_text: str) -> str:
+    return (
+        "You are continuing an existing reasoning trace.\n"
+        "Keep the existing prefix unchanged and continue the reasoning from there.\n"
+        "At the end, output:\n"
+        "Final Answer: <answer>\n\n"
+        f"Question: {question}\n\n"
+        "Existing Reasoning Prefix:\n"
+        f"{prefix_text}\n\n"
+        "Continue the reasoning from the current point:\n"
+    )
+
+
 def build_self_consistency_prompt(
     question: str,
     task: TaskType = "generic",
