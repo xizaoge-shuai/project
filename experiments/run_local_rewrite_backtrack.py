@@ -206,12 +206,16 @@ def build_local_rewrite_prompt(
     if task == "gsm8k":
         task_hint = (
             "This is a math reasoning problem. "
-            "Fix the local reasoning error and continue only as needed. "
+            "Be conservative. "
+            "Only rewrite if there is a clear local error. "
+            "Otherwise keep the suffix unchanged. "
             "End with 'Final Answer: <number>'."
         )
     else:
         task_hint = (
-            "Fix the local reasoning error and continue only as needed. "
+            "Be conservative. "
+            "Only rewrite if there is a clear local error. "
+            "Otherwise keep the suffix unchanged. "
             "End with 'Final Answer: <answer>'."
         )
 
@@ -222,9 +226,27 @@ def build_local_rewrite_prompt(
 Rules:
 1. Keep the valid prefix unchanged.
 2. Do NOT restart the whole solution.
-3. Rewrite ONLY the suspicious local suffix and the necessary continuation.
-4. Be concise.
-5. The final line must be in the form: Final Answer: <answer>
+3. If there is NO clear local error in the suspicious suffix, output KEEP.
+4. Only output REWRITE if there is a clear local error.
+5. Make the minimal edit necessary.
+6. Do NOT change the final answer unless clearly necessary.
+7. Do NOT output any explanation before the decision tag.
+8. The FIRST LINE must be exactly one of:
+[KEEP]
+or
+[REWRITE]
+
+Output format:
+[KEEP]
+<the original suffix followed by continuation if needed>
+
+or
+
+[REWRITE]
+<corrected suffix and continuation>
+
+The final line must still be:
+Final Answer: <answer>
 
 Question:
 {question}
@@ -240,8 +262,6 @@ Current answer:
 
 Error type hint:
 {error_type}
-
-Now produce the corrected continuation only.
 """
 
 
@@ -342,11 +362,17 @@ def choose_first_trigger_row(
     rows: List[Dict[str, Any]],
     tau_trigger: float,
     require_repairable: bool = True,
+    min_trigger_progress: float = 0.0,
 ) -> Optional[Dict[str, Any]]:
     rows = sort_prediction_rows(rows)
     for r in rows:
         prob = safe_float(r.get("success_prob", r.get("score", 1.0)), 1.0)
         repairable = safe_int(r.get("repairable", 1), 1)
+        progress = safe_float(r.get("prefix_progress", 1.0), 1.0)
+
+        if progress < min_trigger_progress:
+            continue
+
         if prob < tau_trigger:
             if require_repairable and repairable != 1:
                 continue
@@ -376,6 +402,7 @@ def main() -> None:
     parser.add_argument("--max_cases", type=int, default=-1, help="debug only")
     parser.add_argument("--out_json", required=True)
     parser.add_argument("--out_jsonl", required=True)
+    parser.add_argument("--min_trigger_progress", type=float, default=0.0)
     args = parser.parse_args()
 
     pred_rows = read_jsonl(args.predictions)
@@ -454,6 +481,7 @@ def main() -> None:
             rows=rows,
             tau_trigger=args.tau_trigger,
             require_repairable=bool(args.require_repairable),
+            min_trigger_progress=args.min_trigger_progress,
         )
 
         if trigger_row is None:
@@ -522,6 +550,24 @@ def main() -> None:
             max_new_tokens=args.max_new_tokens,
         )
         repair_text = (gen_out.get("text", "") or "").strip()
+
+        lines = [x.rstrip() for x in repair_text.splitlines() if x.strip()]
+        first_line = lines[0].strip().upper() if lines else ""
+
+        decision = "KEEP"
+        body = faulty_suffix
+
+        if first_line in {"[REWRITE]", "REWRITE"}:
+            decision = "REWRITE"
+            body = "\n".join(lines[1:]).strip()
+        elif first_line in {"[KEEP]", "KEEP"}:
+            decision = "KEEP"
+            body = faulty_suffix
+        else:
+            # 任何不符合格式的输出，统一按 KEEP 处理
+            decision = "UNKNOWN"
+            body = faulty_suffix
+
         extra_tokens = gen_out.get("tokens", None)
         if extra_tokens is None:
             extra_tokens = approx_token_count(repair_text)
@@ -531,9 +577,9 @@ def main() -> None:
         num_rewritten += 1
 
         repaired_full_text = (
-            repair_text
+            body
             if not valid_prefix.strip()
-            else valid_prefix + "\n" + repair_text
+            else valid_prefix + "\n" + body
         )
         parsed = parse_generation_output(repaired_full_text, task=args.dataset)
         repaired_final_answer = str(parsed.get("final_answer", "")).strip()
@@ -583,11 +629,22 @@ def main() -> None:
                 "gold_answer": gold_answer,
                 "extra_repair_tokens": extra_tokens,
                 "generator_latency": gen_out.get("latency", None),
+                "repair_decision": decision,
             }
         )
 
         processed_cases += 1
+    num_triggered_bad = sum(
+        1
+        for d in details
+        if d.get("triggered", False) and (not d.get("original_is_correct", False))
+    )
 
+    num_triggered_good = sum(
+        1
+        for d in details
+        if d.get("triggered", False) and d.get("original_is_correct", False)
+    )
     summary = {
         "setting": f"local_rewrite_backtrack/{args.dataset}",
         "tau_trigger": args.tau_trigger,
@@ -609,15 +666,13 @@ def main() -> None:
             num_recovered / num_triggered if num_triggered > 0 else None
         ),
         "recover_rate_bad": (
-            num_recovered_bad / n_bad_trajectories if n_bad_trajectories > 0 else None
+            num_recovered_bad / num_triggered_bad if num_triggered_bad > 0 else None
         ),
         "preserve_rate_good": (
-            num_preserved_good / n_good_trajectories
-            if n_good_trajectories > 0
-            else None
+            num_preserved_good / num_triggered_good if num_triggered_good > 0 else None
         ),
         "harm_rate_good": (
-            num_harmed_good / n_good_trajectories if n_good_trajectories > 0 else None
+            num_harmed_good / num_triggered_good if num_triggered_good > 0 else None
         ),
         "avg_trigger_progress": (
             sum_trigger_progress / num_triggered if num_triggered > 0 else None
