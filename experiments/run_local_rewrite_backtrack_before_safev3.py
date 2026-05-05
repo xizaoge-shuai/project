@@ -14,14 +14,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from controller.repair_safety import (
-    split_steps_for_repair,
-    build_safe_repair_prompt,
-    safe_repair_gate,
-    truncate_generation_noise,
-)
-
-
 # 你的项目里前面已经定过这两个 wrapper
 from generator.local import LocalGenerator
 from generator.api import APIGenerator
@@ -537,111 +529,66 @@ def main() -> None:
 
         sum_trigger_progress += trigger_progress
 
-        # =========================
-        # Safe local rewrite v3
-        # =========================
-        #
-        # Old behavior:
-        #   split prefix_text -> valid_prefix/faulty_suffix.
-        #   If prefix_text is empty, both become [EMPTY], but the script still calls the repairer.
-        #
-        # New behavior:
-        #   use the original trajectory steps and trigger_progress to build a non-empty local window.
-        #   if local context is invalid, force KEEP.
-        #   if repair output is malformed, force KEEP.
-        #   KEEP must preserve the original correctness label.
-        steps_for_repair = traj.get("steps", [])
-        if not isinstance(steps_for_repair, list):
-            steps_for_repair = []
-
-        valid_prefix_steps, faulty_suffix_steps, trigger_idx = split_steps_for_repair(
-            steps=steps_for_repair,
-            trigger_progress=trigger_progress,
+        valid_prefix, faulty_suffix = split_for_local_rewrite(
+            prefix_text=prefix_text,
             rewrite_window=args.rewrite_window,
         )
 
-        valid_prefix = "\n".join(str(x).strip() for x in valid_prefix_steps if str(x).strip())
-        faulty_suffix = "\n".join(str(x).strip() for x in faulty_suffix_steps if str(x).strip())
-
-        if not str(current_answer).strip():
-            # fallback: extract from the full original trajectory if current_answer is missing
-            current_answer = fallback_extract_final_answer("\n".join(str(x) for x in steps_for_repair))
-
-        repair_prompt = build_safe_repair_prompt(
+        repair_prompt = build_local_rewrite_prompt(
             question=question,
-            valid_prefix_steps=valid_prefix_steps,
-            suspicious_suffix_steps=faulty_suffix_steps,
+            valid_prefix=valid_prefix,
+            faulty_suffix=faulty_suffix,
             current_answer=current_answer,
-            error_type_hint=error_type,
+            error_type=error_type,
+            task=args.dataset,
+            context=context,
         )
 
-        repair_text = ""
-        cleaned_repair_text = ""
-        repaired_full_text = ""
-        repaired_final_answer = str(current_answer or "").strip()
-        extra_tokens = 0
+        gen_out = generate_repair_text(
+            generator=generator,
+            prompt=repair_prompt,
+            max_new_tokens=args.max_new_tokens,
+        )
+        repair_text = (gen_out.get("text", "") or "").strip()
+
+        lines = [x.rstrip() for x in repair_text.splitlines() if x.strip()]
+        first_line = lines[0].strip().upper() if lines else ""
+
         decision = "KEEP"
-        safe_reason = "empty_local_context"
+        body = faulty_suffix
 
-        if repair_prompt is None:
-            # No valid local context. Do not call the repairer.
+        if first_line in {"[REWRITE]", "REWRITE"}:
+            decision = "REWRITE"
+            body = "\n".join(lines[1:]).strip()
+        elif first_line in {"[KEEP]", "KEEP"}:
             decision = "KEEP"
-            safe_reason = "empty_local_context"
-            repaired_final_answer = str(current_answer or "").strip()
-            repaired_full_text = (
-                valid_prefix + "\n" + faulty_suffix
-                if valid_prefix.strip()
-                else faulty_suffix
-            )
-            repaired_is_correct = bool(original_is_correct)
-
+            body = faulty_suffix
         else:
-            gen_out = generate_repair_text(
-                generator=generator,
-                prompt=repair_prompt,
-                max_new_tokens=args.max_new_tokens,
-            )
-            repair_text = (gen_out.get("text", "") or "").strip()
-            repair_text = truncate_generation_noise(repair_text)
+            # 任何不符合格式的输出，统一按 KEEP 处理
+            decision = "UNKNOWN"
+            body = faulty_suffix
 
-            extra_tokens = gen_out.get("tokens", None)
-            if extra_tokens is None:
-                extra_tokens = approx_token_count(repair_text)
+        extra_tokens = gen_out.get("tokens", None)
+        if extra_tokens is None:
+            extra_tokens = approx_token_count(repair_text)
 
-            sum_extra_tokens += float(extra_tokens)
-            sum_extra_tokens_triggered += float(extra_tokens)
+        sum_extra_tokens += float(extra_tokens)
+        sum_extra_tokens_triggered += float(extra_tokens)
+        num_rewritten += 1
 
-            gate = safe_repair_gate(
-                repair_output=repair_text,
-                original_answer=str(current_answer or "").strip(),
-            )
+        repaired_full_text = (
+            body
+            if not valid_prefix.strip()
+            else valid_prefix + "\n" + body
+        )
+        parsed = parse_generation_output(repaired_full_text, task=args.dataset)
+        repaired_final_answer = str(parsed.get("final_answer", "")).strip()
 
-            decision = gate.get("action", "KEEP")
-            safe_reason = gate.get("reason", "")
-            cleaned_repair_text = gate.get("cleaned_output", repair_text)
-
-            if decision == "REWRITE":
-                num_rewritten += 1
-                repaired_final_answer = str(gate.get("final_answer", "")).strip()
-                repaired_full_text = (
-                    valid_prefix + "\n" + cleaned_repair_text
-                    if valid_prefix.strip()
-                    else cleaned_repair_text
-                )
-                repaired_is_correct = is_answer_correct(
-                    pred_answer=repaired_final_answer,
-                    gold_answer=gold_answer,
-                    dataset=args.dataset,
-                )
-            else:
-                # Invalid repair output. Keep original trajectory.
-                repaired_final_answer = str(current_answer or "").strip()
-                repaired_full_text = (
-                    valid_prefix + "\n" + faulty_suffix
-                    if valid_prefix.strip()
-                    else faulty_suffix
-                )
-                repaired_is_correct = bool(original_is_correct)
+        repaired_is_correct = is_answer_correct(
+            pred_answer=repaired_final_answer,
+            gold_answer=gold_answer,
+            dataset=args.dataset,
+        )
 
         recovered = False
         preserved_good = False
@@ -683,9 +630,6 @@ def main() -> None:
                 "extra_repair_tokens": extra_tokens,
                 "generator_latency": gen_out.get("latency", None),
                 "repair_decision": decision,
-                "safe_reason": safe_reason,
-                "trigger_idx": trigger_idx,
-                "cleaned_repair_output": cleaned_repair_text,
             }
         )
 
