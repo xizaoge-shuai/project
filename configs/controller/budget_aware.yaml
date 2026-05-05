@@ -2,5 +2,20 @@ tau_prune: 0.25
 tau_backtrack: 0.45
 tau_accept: 0.88
 max_backtracks: 2
+
+# budget 紧张时，更激进：
+# - 更容易 accept
+# - 更容易 prune
+# - 更少 backtrack
 tight_budget_bonus: 0.08
-ample_budget_bonus: -0.05
+
+# budget 宽裕时，更保守：
+# - accept 阈值更高
+# - prune 阈值更低
+# - 更允许继续/回溯
+ample_budget_relax: 0.05
+
+min_progress_for_prune: 0.15
+min_progress_for_backtrack: 0.10
+max_uncertainty_for_accept: 0.20
+near_end_accept_boost: 0.05
