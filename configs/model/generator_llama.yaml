@@ -18,7 +18,7 @@ stop:
 # vLLM 专用
 tensor_parallel_size: 1
 max_model_len: 8192
-gpu_memory_utilization: 0.7
+gpu_memory_utilization: 0.95
 dtype: auto
 trust_remote_code: true
 enforce_eager: false
