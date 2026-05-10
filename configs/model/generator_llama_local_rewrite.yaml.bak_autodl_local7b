@@ -1,5 +1,5 @@
 backend: vllm
-model_name_or_path: /root/autodl-tmp/models/Qwen2.5-7B-Instruct
+model_name_or_path: Qwen/Qwen2.5-7B-Instruct
 
 max_new_tokens: 96
 temperature: 0.2
@@ -12,9 +12,9 @@ seed: 42
 stop: null
 
 tensor_parallel_size: 1
-max_model_len: 2048
-gpu_memory_utilization: 0.60
+max_model_len: 4096
+gpu_memory_utilization: 0.95
 dtype: auto
 trust_remote_code: true
-enforce_eager: true
+enforce_eager: false
 disable_log_stats: true

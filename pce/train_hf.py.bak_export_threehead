@@ -222,104 +222,49 @@ def save_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
-def predict_success_probs(model, dataloader, device):
-    """
-    Predict success probability and attach optional multi-head outputs
-    into each meta row.
-
-    Return signature is kept unchanged:
-        probs, gold, meta
-    """
-    import torch
-
+def predict_success_probs(
+    model: VerifierHFPCE,
+    dataloader: DataLoader,
+    device: str,
+) -> Tuple[List[float], List[int], List[Dict[str, Any]]]:
     model.eval()
-    all_probs = []
-    all_gold = []
-    all_meta = []
+    all_probs: List[float] = []
+    all_labels: List[int] = []
+    all_metas: List[Dict[str, Any]] = []
 
     with torch.no_grad():
         for batch in dataloader:
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-
-            out = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-            )
-
-            success_probs = out["success_prob"].detach().cpu().numpy().tolist()
-            labels = batch["success_labels"].detach().cpu().numpy().tolist()
             metas = batch["meta"]
+            labels = batch["success_labels"].cpu().numpy().tolist()
 
-            repair_probs = None
-            if "repair_prob" in out:
-                repair_probs = out["repair_prob"].detach().cpu().numpy().tolist()
+            batch = move_to_device(batch, device)
+            out = model(
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+            )
+            probs = out["success_prob"].detach().cpu().numpy().tolist()
 
-            error_probs = None
-            error_pred_ids = None
-            if "error_logits" in out:
-                error_tensor = torch.softmax(out["error_logits"], dim=-1).detach().cpu()
-                error_probs = error_tensor.numpy().tolist()
-                error_pred_ids = torch.argmax(error_tensor, dim=-1).numpy().tolist()
+            all_probs.extend([float(x) for x in probs])
+            all_labels.extend([int(x) for x in labels])
+            all_metas.extend(metas)
 
-            for i, p_success in enumerate(success_probs):
-                m = dict(metas[i])
-
-                if repair_probs is not None:
-                    rp = float(repair_probs[i])
-                    m["repair_prob"] = rp
-                    m["repairable"] = int(rp >= 0.5)
-
-                if error_probs is not None:
-                    pred_id = int(error_pred_ids[i])
-                    m["error_pred_id"] = pred_id
-                    # 这里先用数字类 ID。后面若需要名字映射，再把 error_type_to_id 保存并反查。
-                    m["error_type"] = str(pred_id)
-                    m["error_probs"] = {
-                        str(j): float(v)
-                        for j, v in enumerate(error_probs[i])
-                    }
-
-                all_probs.append(float(p_success))
-                all_gold.append(float(labels[i]))
-                all_meta.append(m)
-
-    return all_probs, all_gold, all_meta
+    return all_probs, all_labels, all_metas
 
 
-def build_prediction_rows(meta, gold, probs):
-    rows = []
-    for m, y, p in zip(meta, gold, probs):
-        row = {
-            "prefix_id": m.get("prefix_id"),
-            "sample_id": m.get("sample_id"),
-            "trajectory_id": m.get("trajectory_id"),
-            "dataset": m.get("dataset"),
-            "split": m.get("split"),
-            "task": m.get("task", m.get("dataset")),
-            "level": m.get("level"),
-            "question": m.get("question"),
-            "gold_answer": m.get("gold_answer"),
-            "final_answer": m.get("final_answer"),
-            "prefix_num_units": m.get("prefix_num_units"),
-            "trajectory_total_units": m.get("trajectory_total_units"),
-            "prefix_progress": m.get("prefix_progress"),
-            "label_success": int(float(y)),
-            "success_prob": float(p),
-        }
-
-        for k in [
-            "repair_prob",
-            "repairable",
-            "error_type",
-            "error_pred_id",
-            "error_probs",
-        ]:
-            if k in m:
-                row[k] = m[k]
-
-        rows.append(row)
-
+def build_prediction_rows(
+    metas: List[Dict[str, Any]],
+    labels: List[int],
+    probs: List[float],
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for meta, y, p in zip(metas, labels, probs):
+        rows.append(
+            {
+                **meta,
+                "label_success": int(y),
+                "success_prob": float(p),
+            }
+        )
     return rows
 
 

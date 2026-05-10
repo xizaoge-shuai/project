@@ -373,7 +373,6 @@ def choose_first_trigger_row(
     missing_repairable_policy: str = "allow",
     repair_prob_threshold: float = 0.5,
     min_trigger_progress: float = 0.0,
-    min_trigger_units: int = 1,
 ) -> Optional[Dict[str, Any]]:
     rows = sort_prediction_rows(rows)
     for r in rows:
@@ -404,9 +403,6 @@ def choose_first_trigger_row(
         progress = safe_float(r.get("prefix_progress", 1.0), 1.0)
 
         if progress < min_trigger_progress:
-            continue
-        units = safe_int(r.get('prefix_num_units', r.get('trigger_idx', 0)), 0)
-        if units < min_trigger_units:
             continue
 
         if prob < tau_trigger:
@@ -441,7 +437,6 @@ def main() -> None:
     parser.add_argument("--out_json", required=True)
     parser.add_argument("--out_jsonl", required=True)
     parser.add_argument("--min_trigger_progress", type=float, default=0.0)
-    parser.add_argument("--min_trigger_units", type=int, default=1)
     args = parser.parse_args()
 
     pred_rows = read_jsonl(args.predictions)
@@ -523,7 +518,6 @@ def main() -> None:
             missing_repairable_policy=args.missing_repairable_policy,
             repair_prob_threshold=args.repair_prob_threshold,
             min_trigger_progress=args.min_trigger_progress,
-            min_trigger_units=args.min_trigger_units,
         )
 
         if trigger_row is None:
