@@ -1,0 +1,29 @@
+{
+  "dataset": "gsm8k",
+  "trigger": "margin",
+  "margin_threshold": 0.3,
+  "accept_policy": "final_in_candidates",
+  "use_confidence_in_prompt": 1,
+  "n_samples": 1319,
+  "flagged_total": 107,
+  "judged_total": 107,
+  "accepted_count": 106,
+  "base_weighted_tail5_acc": 0.8984078847611827,
+  "judge_final_acc": 0.9075056861258529,
+  "oracle_any_acc": 0.9401061410159212,
+  "fixed_count": 21,
+  "broken_count": 9,
+  "net_gain_count": 12,
+  "reason_counter": {
+    "majority_supported": 92,
+    "inconsistent_reasoning": 8,
+    "majority_supported End of solution.": 1,
+    "majority_supported \\end{document}": 1,
+    "majority_supported \\end{solution} \\ Chosen Candidate: A \\ Final Answer: 105 \\ Reason Type: majority_supported \\end{solution} \\ Chosen Candidate: A \\ Final Answer: 105 \\": 1,
+    "unit_conversion": 1,
+    "arithmetic_error": 1,
+    "consistent_reasoning": 1,
+    "majority_supported **Note: Candidate A and Candidate C both arrive at the correct final answer of 2040 minutes, while Candidate B incorrectly converts the final answer to hours, leading to an incorrect final answer of 5": 1
+  },
+  "out_jsonl": "outputs/predictions/selective_judge_gsm8k_full_tau046_margin030_v3_conf_finalcand.jsonl"
+}
