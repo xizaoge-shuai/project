@@ -1,0 +1,12 @@
+name: multiarith
+task: multiarith
+raw_dir: data/raw/multiarith
+processed_dir: data/processed/unified/multiarith
+train_file: null
+validation_file: null
+test_file: data/processed/unified/multiarith/test.jsonl
+answer_type: numeric
+answer_field: answer
+question_field: question
+context_field: context
+id_field: id
