@@ -1,0 +1,193 @@
+import argparse
+import json
+import re
+from pathlib import Path
+
+import yaml
+from vllm import LLM, SamplingParams
+
+
+def read_jsonl(fp):
+    return [json.loads(x) for x in open(fp, encoding="utf-8") if x.strip()]
+
+
+def append_jsonl(fp, rows):
+    p = Path(fp)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+
+def load_yaml(fp):
+    with open(fp, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def find_key(obj, keys, default=None):
+    if isinstance(obj, dict):
+        for k in keys:
+            if k in obj:
+                return obj[k]
+        for v in obj.values():
+            ans = find_key(v, keys, None)
+            if ans is not None:
+                return ans
+    return default
+
+
+def build_prompt(r):
+    q = r.get("question", "")
+    ctx = str(r.get("context", ""))
+
+    # HotpotQA context can exceed the 2048-token limit used by the current vLLM config.
+    # Keep a compact prefix context for smoke testing.
+    max_context_chars = 2500
+    if len(ctx) > max_context_chars:
+        ctx = ctx[:max_context_chars]
+
+    return (
+        "Answer the question using the provided context. "
+        "Return only the shortest answer span, such as a person, place, organization, date, number, or yes/no. "
+        "Do not explain. Do not repeat the answer.\n\n"
+        f"Context:\n{ctx}\n\n"
+        f"Question: {q}\n\n"
+        "Final Answer:"
+    )
+
+
+def extract_short(text):
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+
+    # 如果模型又输出 Final Answer，取最后一次之后的短片段
+    parts = re.findall(r"final answer\s*[:：]\s*([^\n]+)", raw, flags=re.I)
+    cands = parts + [raw.splitlines()[0]]
+
+    cleaned = []
+    for c in cands:
+        c = re.sub(r"<([^>]+)>", r"\1", str(c))
+        c = c.split("Final Answer")[0]
+        c = c.strip().strip(" .,:;|")
+        if not c:
+            continue
+        # 截到第一句，避免刷屏
+        c = re.split(r"\.\s+|;\s+|\n", c)[0].strip()
+        if len(c.split()) <= 10 and "do not" not in c.lower() and "only answer" not in c.lower():
+            cleaned.append(c)
+
+    if cleaned:
+        return min(cleaned, key=lambda x: (len(x.split()), len(x)))
+
+    return raw[:120].strip()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--input", required=True)
+    ap.add_argument("--output", required=True)
+    ap.add_argument("--generator_config", required=True)
+    ap.add_argument("--n_traj", type=int, default=1)
+    ap.add_argument("--max_samples", type=int, default=100)
+    ap.add_argument("--max_new_tokens", type=int, default=64)
+    ap.add_argument("--temperature", type=float, default=0.7)
+    ap.add_argument("--top_p", type=float, default=0.95)
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--batch_size", type=int, default=4)
+    args = ap.parse_args()
+
+    cfg = load_yaml(args.generator_config)
+    model = (
+        find_key(cfg, ["model_name_or_path", "model", "model_path", "pretrained_model_name_or_path"])
+        or "/root/autodl-tmp/models/Qwen2.5-7B-Instruct"
+    )
+    tensor_parallel_size = int(find_key(cfg, ["tensor_parallel_size"], 1))
+    max_model_len = int(find_key(cfg, ["max_model_len"], 4096))
+    gpu_memory_utilization = float(find_key(cfg, ["gpu_memory_utilization"], 0.60))
+    dtype = find_key(cfg, ["dtype"], "auto")
+    trust_remote_code = bool(find_key(cfg, ["trust_remote_code"], True))
+
+    rows = read_jsonl(args.input)
+    if args.max_samples and args.max_samples > 0:
+        rows = rows[: args.max_samples]
+
+    out_path = Path(args.output)
+    done = set()
+    if out_path.exists():
+        for line in out_path.open("r", encoding="utf-8"):
+            if line.strip():
+                try:
+                    done.add(json.loads(line)["trajectory_id"])
+                except Exception:
+                    pass
+
+    tasks = []
+    for r in rows:
+        sid = r.get("sample_id") or r.get("id")
+        for j in range(args.n_traj):
+            tid = f"{sid}_traj_{j}_seed{args.seed}"
+            if tid in done:
+                continue
+            tasks.append((r, sid, j, tid, build_prompt(r)))
+
+    print("model:", model)
+    print("input samples:", len(rows))
+    print("pending trajectories:", len(tasks))
+    print("output:", args.output)
+
+    if not tasks:
+        print("[DONE] nothing to generate")
+        return
+
+    llm = LLM(
+        model=model,
+        tensor_parallel_size=tensor_parallel_size,
+        max_model_len=max_model_len,
+        gpu_memory_utilization=gpu_memory_utilization,
+        dtype=dtype,
+        trust_remote_code=trust_remote_code,
+    )
+
+    sampling = SamplingParams(
+        temperature=args.temperature,
+        top_p=args.top_p,
+        max_tokens=args.max_new_tokens,
+        seed=args.seed,
+    )
+
+    for start in range(0, len(tasks), args.batch_size):
+        batch = tasks[start : start + args.batch_size]
+        prompts = [x[4] for x in batch]
+        outputs = llm.generate(prompts, sampling)
+
+        out_rows = []
+        for (r, sid, j, tid, _), out in zip(batch, outputs):
+            text = out.outputs[0].text
+            final_answer = extract_short(text)
+
+            out_rows.append({
+                "sample_id": sid,
+                "id": sid,
+                "trajectory_id": tid,
+                "traj_id": j,
+                "sampling_seed": args.seed,
+                "dataset": "hotpotqa",
+                "task": "hotpotqa",
+                "question": r.get("question", ""),
+                "context": r.get("context", ""),
+                "gold_answer": r.get("gold_answer", r.get("answer", "")),
+                "answer": r.get("answer", ""),
+                "response": text,
+                "generated_text": text,
+                "final_answer": final_answer,
+            })
+
+        append_jsonl(args.output, out_rows)
+        print(f"[progress] {min(start + len(batch), len(tasks))}/{len(tasks)}")
+
+    print("[SAVED]", args.output)
+
+
+if __name__ == "__main__":
+    main()
