@@ -1,7 +1,7 @@
 backend: vllm
 model_name_or_path: /root/autodl-tmp/models/DeepSeek-R1-Distill-Qwen-7B
 
-max_new_tokens: 96
+max_new_tokens: 384
 temperature: 0.2
 top_p: 0.9
 top_k: -1
