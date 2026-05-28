@@ -16,31 +16,31 @@ NO_SHUTDOWN_FILE=/tmp/NO_AUTODL_OPEN_MODEL_SHUTDOWN
 mkdir -p /root/autodl-tmp/models
 mkdir -p /root/autodl-tmp/pce_backups
 mkdir -p configs/model
-mkdir -p outputs/logs/model_ablation_parallel_qwen3b
-mkdir -p outputs/metrics/model_ablation_parallel_qwen3b
-mkdir -p outputs/predictions/model_ablation_parallel_qwen3b
+mkdir -p outputs/logs/model_ablation
+mkdir -p outputs/metrics/model_ablation
+mkdir -p outputs/predictions/model_ablation
 mkdir -p outputs/targets/model_ablation
 mkdir -p outputs/logs/final_summaries
-mkdir -p data/processed/unified/model_ablation_parallel_qwen3b
-mkdir -p data/processed/trajectories/model_ablation_parallel_qwen3b
+mkdir -p data/processed/unified/model_ablation
+mkdir -p data/processed/trajectories/model_ablation
 
 on_exit() {
   status=$?
   echo "========== EXIT status=$status =========="
 
   tar --ignore-failed-read -czf /root/autodl-tmp/pce_backups/open_model_all_datasets_${MODE}_$(date +%Y%m%d_%H%M%S).tar.gz \
-    outputs/logs/model_ablation_parallel_qwen3b \
-    outputs/metrics/model_ablation_parallel_qwen3b \
-    outputs/predictions/model_ablation_parallel_qwen3b \
+    outputs/logs/model_ablation \
+    outputs/metrics/model_ablation \
+    outputs/predictions/model_ablation \
     outputs/targets/model_ablation \
     outputs/logs/final_summaries/open_model_all_datasets_${MODE}_summary.md \
     configs/model/*ablation*.yaml \
-    data/processed/trajectories/model_ablation_parallel_qwen3b || true
+    data/processed/trajectories/model_ablation || true
 
   if [ "$status" = "0" ] && [ ! -f "$NO_SHUTDOWN_FILE" ]; then
     echo "[SHUTDOWN] success, shutting down."
     sync
-    echo "[skip shutdown in parallel qwen3b]" || echo "[skip poweroff in parallel qwen3b]" || echo "[skip halt in parallel qwen3b]" || true
+    echo "[skip shutdown in DS7B RESUME]" || echo "[skip poweroff in DS7B RESUME]" || echo "[skip halt in DS7B RESUME]" || true
   else
     echo "[NO SHUTDOWN] status=$status or found $NO_SHUTDOWN_FILE"
   fi
@@ -188,23 +188,6 @@ done
 
 grep -R "model_name_or_path" -n configs/model/*ablation*.yaml || true
 
-
-echo "========== Step 4.5: patch qwen3b parallel config =========="
-python - <<'PY2'
-from pathlib import Path
-
-src = Path("configs/model/generator_qwen25_3b_parallel035.yaml")
-dst = Path("configs/model/generator_qwen25_3b_ablation.yaml")
-
-if src.exists():
-    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-    print("patched qwen3b config from", src, "to", dst)
-else:
-    print("WARNING: parallel035 config not found:", src)
-
-print(dst.read_text(encoding="utf-8"))
-PY2
-
 echo "========== Step 5: check datasets =========="
 
 python - <<'PY'
@@ -270,50 +253,29 @@ def pick(rows, smoke_n):
     return rows[:smoke_n]
 
 gsm = read_jsonl("data/processed/unified/gsm8k/test.jsonl")
-write_jsonl("data/processed/unified/model_ablation_parallel_qwen3b/gsm8k_scope.jsonl", pick(gsm, 300))
+write_jsonl("data/processed/unified/model_ablation/gsm8k_scope.jsonl", pick(gsm, 300))
 
 svamp = read_jsonl("data/processed/unified/svamp/test.jsonl")
-write_jsonl("data/processed/unified/model_ablation_parallel_qwen3b/svamp_scope.jsonl", pick(svamp, 300))
+write_jsonl("data/processed/unified/model_ablation/svamp_scope.jsonl", pick(svamp, 300))
 
 asdiv = read_jsonl("data/processed/unified/asdiv/test_numeric_full.jsonl")
 if not asdiv:
     asdiv = [r for r in read_jsonl("data/processed/unified/asdiv/test.jsonl") if is_numeric(r)]
-write_jsonl("data/processed/unified/model_ablation_parallel_qwen3b/asdiv_scope.jsonl", pick(asdiv, 300))
+write_jsonl("data/processed/unified/model_ablation/asdiv_scope.jsonl", pick(asdiv, 300))
 
 math500 = read_jsonl("data/processed/unified/math500/test.jsonl")
-write_jsonl("data/processed/unified/model_ablation_parallel_qwen3b/math500_scope.jsonl", pick(math500, 100))
+write_jsonl("data/processed/unified/model_ablation/math500_scope.jsonl", pick(math500, 100))
 
 mathqa = read_jsonl("data/processed/unified/mathqa/test.jsonl")
-write_jsonl("data/processed/unified/model_ablation_parallel_qwen3b/mathqa_scope.jsonl", mathqa[:500] if mode == "full" else mathqa[:100])
+write_jsonl("data/processed/unified/model_ablation/mathqa_scope.jsonl", mathqa[:500] if mode == "full" else mathqa[:100])
 
 for task in ["logical_deduction_five_objects", "formal_fallacies"]:
     rows = read_jsonl(f"data/processed/unified/bbh_logic/{task}.jsonl")
-    write_jsonl(f"data/processed/unified/model_ablation_parallel_qwen3b/bbh_{task}_scope.jsonl", rows[:100])
+    write_jsonl(f"data/processed/unified/model_ablation/bbh_{task}_scope.jsonl", rows[:100])
 PY
 
 echo "========== Step 6.5: force REALFULL scopes =========="
 python scripts/force_realfull_model_ablation_scopes.py
-
-
-echo "========== Step 6.6: force REALFULL scopes for parallel qwen3b =========="
-mkdir -p data/processed/unified/model_ablation_parallel_qwen3b
-
-cp data/processed/unified/model_ablation/gsm8k_scope.jsonl data/processed/unified/model_ablation_parallel_qwen3b/gsm8k_scope.jsonl
-cp data/processed/unified/model_ablation/svamp_scope.jsonl data/processed/unified/model_ablation_parallel_qwen3b/svamp_scope.jsonl
-cp data/processed/unified/model_ablation/asdiv_scope.jsonl data/processed/unified/model_ablation_parallel_qwen3b/asdiv_scope.jsonl
-cp data/processed/unified/model_ablation/math500_scope.jsonl data/processed/unified/model_ablation_parallel_qwen3b/math500_scope.jsonl
-cp data/processed/unified/model_ablation/mathqa_scope.jsonl data/processed/unified/model_ablation_parallel_qwen3b/mathqa_scope.jsonl
-cp data/processed/unified/model_ablation/bbh_logical_deduction_five_objects_scope.jsonl data/processed/unified/model_ablation_parallel_qwen3b/bbh_logical_deduction_five_objects_scope.jsonl
-cp data/processed/unified/model_ablation/bbh_formal_fallacies_scope.jsonl data/processed/unified/model_ablation_parallel_qwen3b/bbh_formal_fallacies_scope.jsonl
-
-echo "===== forced parallel qwen3b scope counts ====="
-wc -l data/processed/unified/model_ablation_parallel_qwen3b/gsm8k_scope.jsonl
-wc -l data/processed/unified/model_ablation_parallel_qwen3b/svamp_scope.jsonl
-wc -l data/processed/unified/model_ablation_parallel_qwen3b/asdiv_scope.jsonl
-wc -l data/processed/unified/model_ablation_parallel_qwen3b/math500_scope.jsonl
-wc -l data/processed/unified/model_ablation_parallel_qwen3b/mathqa_scope.jsonl
-wc -l data/processed/unified/model_ablation_parallel_qwen3b/bbh_logical_deduction_five_objects_scope.jsonl
-wc -l data/processed/unified/model_ablation_parallel_qwen3b/bbh_formal_fallacies_scope.jsonl
 
 echo "========== Step 7: write evaluators =========="
 
@@ -557,7 +519,7 @@ run_numeric_like() {
   echo "---------- $TAG $DS base ----------"
   python scripts/generate_numeric_trajectories_resume.py \
     --input "$INPUT" \
-    --output data/processed/trajectories/model_ablation_parallel_qwen3b/${DS}_${TAG}_base_3traj.jsonl \
+    --output data/processed/trajectories/model_ablation/${DS}_${TAG}_base_3traj.jsonl \
     --generator_config "$CFG" \
     --dataset "$DS" \
     --n_traj 3 \
@@ -566,19 +528,19 @@ run_numeric_like() {
     --temperature 0.7 \
     --top_p 0.95 \
     --seed 42 \
-    2>&1 | tee outputs/logs/model_ablation_parallel_qwen3b/generate_${DS}_${TAG}_base.log
+    2>&1 | tee outputs/logs/model_ablation/generate_${DS}_${TAG}_base.log
 
   python experiments/eval_base_model_ablation.py \
-    --trajectories data/processed/trajectories/model_ablation_parallel_qwen3b/${DS}_${TAG}_base_3traj.jsonl \
+    --trajectories data/processed/trajectories/model_ablation/${DS}_${TAG}_base_3traj.jsonl \
     --task_type "$TASK_TYPE" \
-    --out_json outputs/metrics/model_ablation_parallel_qwen3b/${DS}_${TAG}_base.json \
-    --out_jsonl outputs/predictions/model_ablation_parallel_qwen3b/${DS}_${TAG}_base_details.jsonl
+    --out_json outputs/metrics/model_ablation/${DS}_${TAG}_base.json \
+    --out_jsonl outputs/predictions/model_ablation/${DS}_${TAG}_base_details.jsonl
 
   python - <<PY
 import json
 from pathlib import Path
 ds="$DS"; tag="$TAG"; inp="$INPUT"
-rows=[json.loads(x) for x in open(f"outputs/predictions/model_ablation_parallel_qwen3b/{ds}_{tag}_base_details.jsonl", encoding="utf-8") if x.strip()]
+rows=[json.loads(x) for x in open(f"outputs/predictions/model_ablation/{ds}_{tag}_base_details.jsonl", encoding="utf-8") if x.strip()]
 ids=[]
 for r in rows:
     vals=[str(a).strip() for a in r.get("answers_norm", []) if str(a).strip()]
@@ -591,7 +553,7 @@ with open(f"outputs/targets/model_ablation/{ds}_{tag}_has_disagreement_ids.txt",
 unified=[json.loads(x) for x in open(inp, encoding="utf-8") if x.strip()]
 idset=set(ids)
 subset=[r for r in unified if (r.get("sample_id") or r.get("id")) in idset]
-out=Path(f"data/processed/unified/model_ablation_parallel_qwen3b/{ds}_{tag}_has_disagreement.jsonl")
+out=Path(f"data/processed/unified/model_ablation/{ds}_{tag}_has_disagreement.jsonl")
 out.parent.mkdir(parents=True, exist_ok=True)
 with out.open("w", encoding="utf-8") as f:
     for r in subset:
@@ -602,8 +564,8 @@ PY
   for SEED in 42 101 202
   do
     python scripts/generate_numeric_trajectories_resume.py \
-      --input data/processed/unified/model_ablation_parallel_qwen3b/${DS}_${TAG}_has_disagreement.jsonl \
-      --output data/processed/trajectories/model_ablation_parallel_qwen3b/${DS}_${TAG}_extra_seed${SEED}.jsonl \
+      --input data/processed/unified/model_ablation/${DS}_${TAG}_has_disagreement.jsonl \
+      --output data/processed/trajectories/model_ablation/${DS}_${TAG}_extra_seed${SEED}.jsonl \
       --generator_config "$CFG" \
       --dataset "$DS" \
       --n_traj 4 \
@@ -612,17 +574,17 @@ PY
       --temperature 0.95 \
       --top_p 0.95 \
       --seed "$SEED" \
-      2>&1 | tee outputs/logs/model_ablation_parallel_qwen3b/generate_${DS}_${TAG}_extra_seed${SEED}.log
+      2>&1 | tee outputs/logs/model_ablation/generate_${DS}_${TAG}_extra_seed${SEED}.log
   done
 
   BASE_ACC=$(python - <<PY
 import json
-x=json.load(open("outputs/metrics/model_ablation_parallel_qwen3b/${DS}_${TAG}_base.json", encoding="utf-8"))
+x=json.load(open("outputs/metrics/model_ablation/${DS}_${TAG}_base.json", encoding="utf-8"))
 print(x["majority_acc"])
 PY
 )
 
-  EXTRA_FILES="data/processed/trajectories/model_ablation_parallel_qwen3b/${DS}_${TAG}_extra_seed42.jsonl data/processed/trajectories/model_ablation_parallel_qwen3b/${DS}_${TAG}_extra_seed101.jsonl data/processed/trajectories/model_ablation_parallel_qwen3b/${DS}_${TAG}_extra_seed202.jsonl"
+  EXTRA_FILES="data/processed/trajectories/model_ablation/${DS}_${TAG}_extra_seed42.jsonl data/processed/trajectories/model_ablation/${DS}_${TAG}_extra_seed101.jsonl data/processed/trajectories/model_ablation/${DS}_${TAG}_extra_seed202.jsonl"
 
   for TOTAL in 2 3 4
   do
@@ -631,7 +593,7 @@ PY
       for MARGIN in 0 1 2
       do
         python experiments/apply_confirm_model_ablation.py \
-          --baseline_details outputs/predictions/model_ablation_parallel_qwen3b/${DS}_${TAG}_base_details.jsonl \
+          --baseline_details outputs/predictions/model_ablation/${DS}_${TAG}_base_details.jsonl \
           --extra_jsonls $EXTRA_FILES \
           --target_ids outputs/targets/model_ablation/${DS}_${TAG}_has_disagreement_ids.txt \
           --task_type "$TASK_TYPE" \
@@ -640,7 +602,7 @@ PY
           --min_total_support "$TOTAL" \
           --min_seed_support "$SEEDSUP" \
           --min_margin "$MARGIN" \
-          --out_json outputs/metrics/model_ablation_parallel_qwen3b/${DS}_${TAG}_total${TOTAL}_seed${SEEDSUP}_margin${MARGIN}.json
+          --out_json outputs/metrics/model_ablation/${DS}_${TAG}_total${TOTAL}_seed${SEEDSUP}_margin${MARGIN}.json
       done
     done
   done
@@ -650,7 +612,7 @@ run_bbh() {
   local TAG="$1"
   local CFG="$2"
   local TASK="$3"
-  local INPUT="data/processed/unified/model_ablation_parallel_qwen3b/bbh_${TASK}_scope.jsonl"
+  local INPUT="data/processed/unified/model_ablation/bbh_${TASK}_scope.jsonl"
   local DS="bbh_${TASK}"
   local N
   N=$(grep -cve '^[[:space:]]*$' "$INPUT" || true)
@@ -658,7 +620,7 @@ run_bbh() {
   echo "---------- $TAG $DS base ----------"
   python scripts/generate_bbh_logic_trajectories_vllm.py \
     --input "$INPUT" \
-    --output data/processed/trajectories/model_ablation_parallel_qwen3b/${DS}_${TAG}_base_3traj.jsonl \
+    --output data/processed/trajectories/model_ablation/${DS}_${TAG}_base_3traj.jsonl \
     --generator_config "$CFG" \
     --n_traj 3 \
     --max_samples 0 \
@@ -667,19 +629,19 @@ run_bbh() {
     --top_p 0.95 \
     --seed 42 \
     --batch_size 4 \
-    2>&1 | tee outputs/logs/model_ablation_parallel_qwen3b/generate_${DS}_${TAG}_base.log
+    2>&1 | tee outputs/logs/model_ablation/generate_${DS}_${TAG}_base.log
 
   python experiments/eval_base_model_ablation.py \
-    --trajectories data/processed/trajectories/model_ablation_parallel_qwen3b/${DS}_${TAG}_base_3traj.jsonl \
+    --trajectories data/processed/trajectories/model_ablation/${DS}_${TAG}_base_3traj.jsonl \
     --task_type choice \
-    --out_json outputs/metrics/model_ablation_parallel_qwen3b/${DS}_${TAG}_base.json \
-    --out_jsonl outputs/predictions/model_ablation_parallel_qwen3b/${DS}_${TAG}_base_details.jsonl
+    --out_json outputs/metrics/model_ablation/${DS}_${TAG}_base.json \
+    --out_jsonl outputs/predictions/model_ablation/${DS}_${TAG}_base_details.jsonl
 
   python - <<PY
 import json
 from pathlib import Path
 ds="$DS"; tag="$TAG"; inp="$INPUT"
-rows=[json.loads(x) for x in open(f"outputs/predictions/model_ablation_parallel_qwen3b/{ds}_{tag}_base_details.jsonl", encoding="utf-8") if x.strip()]
+rows=[json.loads(x) for x in open(f"outputs/predictions/model_ablation/{ds}_{tag}_base_details.jsonl", encoding="utf-8") if x.strip()]
 ids=[]
 for r in rows:
     vals=[str(a).strip() for a in r.get("answers_norm", []) if str(a).strip()]
@@ -692,7 +654,7 @@ with open(f"outputs/targets/model_ablation/{ds}_{tag}_has_disagreement_ids.txt",
 unified=[json.loads(x) for x in open(inp, encoding="utf-8") if x.strip()]
 idset=set(ids)
 subset=[r for r in unified if (r.get("sample_id") or r.get("id")) in idset]
-out=Path(f"data/processed/unified/model_ablation_parallel_qwen3b/{ds}_{tag}_has_disagreement.jsonl")
+out=Path(f"data/processed/unified/model_ablation/{ds}_{tag}_has_disagreement.jsonl")
 out.parent.mkdir(parents=True, exist_ok=True)
 with out.open("w", encoding="utf-8") as f:
     for r in subset:
@@ -703,8 +665,8 @@ PY
   for SEED in 303 404 505 606 707 808
   do
     python scripts/generate_bbh_logic_trajectories_vllm.py \
-      --input data/processed/unified/model_ablation_parallel_qwen3b/${DS}_${TAG}_has_disagreement.jsonl \
-      --output data/processed/trajectories/model_ablation_parallel_qwen3b/${DS}_${TAG}_extra_seed${SEED}.jsonl \
+      --input data/processed/unified/model_ablation/${DS}_${TAG}_has_disagreement.jsonl \
+      --output data/processed/trajectories/model_ablation/${DS}_${TAG}_extra_seed${SEED}.jsonl \
       --generator_config "$CFG" \
       --n_traj 1 \
       --max_samples 0 \
@@ -713,12 +675,12 @@ PY
       --top_p 0.95 \
       --seed "$SEED" \
       --batch_size 4 \
-      2>&1 | tee outputs/logs/model_ablation_parallel_qwen3b/generate_${DS}_${TAG}_extra_seed${SEED}.log
+      2>&1 | tee outputs/logs/model_ablation/generate_${DS}_${TAG}_extra_seed${SEED}.log
   done
 
   BASE_ACC=$(python - <<PY
 import json
-x=json.load(open("outputs/metrics/model_ablation_parallel_qwen3b/${DS}_${TAG}_base.json", encoding="utf-8"))
+x=json.load(open("outputs/metrics/model_ablation/${DS}_${TAG}_base.json", encoding="utf-8"))
 print(x["majority_acc"])
 PY
 )
@@ -726,7 +688,7 @@ PY
   EXTRA_FILES=""
   for SEED in 303 404 505 606 707 808
   do
-    EXTRA_FILES="$EXTRA_FILES data/processed/trajectories/model_ablation_parallel_qwen3b/${DS}_${TAG}_extra_seed${SEED}.jsonl"
+    EXTRA_FILES="$EXTRA_FILES data/processed/trajectories/model_ablation/${DS}_${TAG}_extra_seed${SEED}.jsonl"
   done
 
   for TOTAL in 2 3 4
@@ -736,7 +698,7 @@ PY
       for MARGIN in 0 1 2
       do
         python experiments/apply_confirm_model_ablation.py \
-          --baseline_details outputs/predictions/model_ablation_parallel_qwen3b/${DS}_${TAG}_base_details.jsonl \
+          --baseline_details outputs/predictions/model_ablation/${DS}_${TAG}_base_details.jsonl \
           --extra_jsonls $EXTRA_FILES \
           --target_ids outputs/targets/model_ablation/${DS}_${TAG}_has_disagreement_ids.txt \
           --task_type choice \
@@ -745,7 +707,7 @@ PY
           --min_total_support "$TOTAL" \
           --min_seed_support "$SEEDSUP" \
           --min_margin "$MARGIN" \
-          --out_json outputs/metrics/model_ablation_parallel_qwen3b/${DS}_${TAG}_total${TOTAL}_seed${SEEDSUP}_margin${MARGIN}.json
+          --out_json outputs/metrics/model_ablation/${DS}_${TAG}_total${TOTAL}_seed${SEEDSUP}_margin${MARGIN}.json
       done
     done
   done
@@ -756,11 +718,11 @@ do
   CFG=$(cfg_for_model "$TAG")
   echo "==================== MODEL $TAG CFG=$CFG ===================="
 
-  run_numeric_like "$TAG" "$CFG" gsm8k data/processed/unified/model_ablation_parallel_qwen3b/gsm8k_scope.jsonl numeric 384
-  run_numeric_like "$TAG" "$CFG" svamp data/processed/unified/model_ablation_parallel_qwen3b/svamp_scope.jsonl numeric 384
-  run_numeric_like "$TAG" "$CFG" asdiv data/processed/unified/model_ablation_parallel_qwen3b/asdiv_scope.jsonl numeric 384
-  run_numeric_like "$TAG" "$CFG" math500 data/processed/unified/model_ablation_parallel_qwen3b/math500_scope.jsonl numeric 512
-  run_numeric_like "$TAG" "$CFG" mathqa data/processed/unified/model_ablation_parallel_qwen3b/mathqa_scope.jsonl choice 512
+  run_numeric_like "$TAG" "$CFG" gsm8k data/processed/unified/model_ablation/gsm8k_scope.jsonl numeric 384
+  run_numeric_like "$TAG" "$CFG" svamp data/processed/unified/model_ablation/svamp_scope.jsonl numeric 384
+  run_numeric_like "$TAG" "$CFG" asdiv data/processed/unified/model_ablation/asdiv_scope.jsonl numeric 384
+  run_numeric_like "$TAG" "$CFG" math500 data/processed/unified/model_ablation/math500_scope.jsonl numeric 512
+  run_numeric_like "$TAG" "$CFG" mathqa data/processed/unified/model_ablation/mathqa_scope.jsonl choice 512
 
   run_bbh "$TAG" "$CFG" logical_deduction_five_objects
   run_bbh "$TAG" "$CFG" formal_fallacies
@@ -807,11 +769,11 @@ datasets = [
 
 for tag in models:
     for ds in datasets:
-        base_fp = Path(f"outputs/metrics/model_ablation_parallel_qwen3b/{ds}_{tag}_base.json")
+        base_fp = Path(f"outputs/metrics/model_ablation/{ds}_{tag}_base.json")
         if not base_fp.exists():
             continue
         b = json.load(open(base_fp, encoding="utf-8"))
-        rows = load_rows(f"outputs/metrics/model_ablation_parallel_qwen3b/{ds}_{tag}_total*.json")
+        rows = load_rows(f"outputs/metrics/model_ablation/{ds}_{tag}_total*.json")
         x = best(rows)
         if not x:
             continue

@@ -40,7 +40,7 @@ on_exit() {
   if [ "$status" = "0" ] && [ ! -f "$NO_SHUTDOWN_FILE" ]; then
     echo "[SHUTDOWN] success, shutting down."
     sync
-    echo "[skip shutdown in parallel qwen3b]" || echo "[skip poweroff in parallel qwen3b]" || echo "[skip halt in parallel qwen3b]" || true
+    echo "[skip shutdown qwen3b parallel resume]" || echo "[skip poweroff qwen3b parallel resume]" || echo "[skip halt qwen3b parallel resume]" || true
   else
     echo "[NO SHUTDOWN] status=$status or found $NO_SHUTDOWN_FILE"
   fi
@@ -189,21 +189,9 @@ done
 grep -R "model_name_or_path" -n configs/model/*ablation*.yaml || true
 
 
-echo "========== Step 4.5: patch qwen3b parallel config =========="
-python - <<'PY2'
-from pathlib import Path
-
-src = Path("configs/model/generator_qwen25_3b_parallel035.yaml")
-dst = Path("configs/model/generator_qwen25_3b_ablation.yaml")
-
-if src.exists():
-    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-    print("patched qwen3b config from", src, "to", dst)
-else:
-    print("WARNING: parallel035 config not found:", src)
-
-print(dst.read_text(encoding="utf-8"))
-PY2
+echo "========== Step 4.5: patch qwen3b parallel035 config =========="
+cp configs/model/generator_qwen25_3b_parallel035.yaml configs/model/generator_qwen25_3b_ablation.yaml
+cat configs/model/generator_qwen25_3b_ablation.yaml
 
 echo "========== Step 5: check datasets =========="
 

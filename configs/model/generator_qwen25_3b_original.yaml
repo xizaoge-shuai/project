@@ -1,8 +1,8 @@
 backend: vllm
 model_name_or_path: /root/autodl-tmp/models/Qwen2.5-3B-Instruct
 
-max_new_tokens: 384
-temperature: 0.2
+max_new_tokens: 1024
+temperature: 0.95
 top_p: 0.9
 top_k: -1
 repetition_penalty: 1.0

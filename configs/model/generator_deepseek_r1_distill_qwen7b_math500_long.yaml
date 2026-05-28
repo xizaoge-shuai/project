@@ -1,5 +1,5 @@
 backend: vllm
-model_name_or_path: /root/autodl-tmp/models/Qwen2.5-3B-Instruct
+model_name_or_path: /root/autodl-tmp/models/DeepSeek-R1-Distill-Qwen-7B
 
 max_new_tokens: 1024
 temperature: 0.95
@@ -13,7 +13,7 @@ stop: null
 
 tensor_parallel_size: 1
 max_model_len: 2048
-gpu_memory_utilization: 0.35
+gpu_memory_utilization: 0.60
 dtype: auto
 trust_remote_code: true
 enforce_eager: true

@@ -12,7 +12,7 @@ seed: 42
 stop: null
 
 tensor_parallel_size: 1
-max_model_len: 2048
+max_model_len: 3072
 gpu_memory_utilization: 0.35
 dtype: auto
 trust_remote_code: true
