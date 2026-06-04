@@ -1,0 +1,355 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import argparse
+import csv
+import json
+import re
+from pathlib import Path
+from collections import Counter, defaultdict
+
+LABELS = ["a", "b", "c", "d", "e"]
+
+def norm_text(x):
+    if x is None:
+        return ""
+    s = str(x).strip().lower()
+    s = s.replace(",", "").replace("$", "").replace("\\$", "")
+    s = re.sub(r"\s+", " ", s)
+    s = s.strip(" .。,:：;；")
+    return s
+
+def norm_num(x):
+    s = norm_text(x)
+    nums = re.findall(r"[-+]?\d*\.?\d+(?:/\d+)?", s)
+    if not nums:
+        return s
+    z = nums[-1]
+    if "/" in z:
+        try:
+            a, b = z.split("/", 1)
+            v = float(a) / float(b)
+            return f"{v:.10f}".rstrip("0").rstrip(".")
+        except Exception:
+            return z
+    try:
+        v = float(z)
+        if abs(v - round(v)) < 1e-9:
+            return str(int(round(v)))
+        return f"{v:.10f}".rstrip("0").rstrip(".")
+    except Exception:
+        return z
+
+def get_sid(r):
+    return str(r.get("sample_id") or r.get("id") or "")
+
+def parse_options(row):
+    opts = {}
+
+    for k in ["options", "choices", "answer_choices"]:
+        v = row.get(k)
+        if isinstance(v, dict):
+            for kk, vv in v.items():
+                lab = str(kk).strip().lower()[:1]
+                if lab in LABELS:
+                    opts[lab] = str(vv)
+        elif isinstance(v, list):
+            for i, vv in enumerate(v[:5]):
+                opts[LABELS[i]] = str(vv)
+
+    # Some MathQA files store options as a single string, e.g.,
+    # "a ) 12 , b ) 18 , c ) 24 ..."
+    for k in ["options", "choices", "answer_choices"]:
+        v = row.get(k)
+        if isinstance(v, str):
+            txt_opt = " " + v.strip()
+            pat = re.compile(
+                r"(?i)(?:^|[\s,;])([abcde])\s*[\)\.：:]\s*(.*?)(?=(?:[\s,;]+[abcde]\s*[\)\.：:])|$)"
+            )
+            for lab, val in pat.findall(txt_opt):
+                lab = lab.lower()
+                val = val.strip(" ,;")
+                if lab in LABELS and val:
+                    opts[lab] = val
+
+    # 有些 MathQA 是 option_a / option_b
+    for lab in LABELS:
+        for k in [lab, lab.upper(), f"option_{lab}", f"option{lab}", f"choice_{lab}"]:
+            if k in row and row[k] is not None:
+                opts[lab] = str(row[k])
+
+    # 从 question 里兜底解析：a ) xxx b ) xxx
+    q = str(row.get("question") or row.get("problem") or row.get("input") or "")
+    if len(opts) < 2:
+        pat = re.compile(r"(?i)(?:^|\s)([abcde])\s*[\)\.：:]\s*(.*?)(?=\s+[abcde]\s*[\)\.：:]|$)")
+        for lab, val in pat.findall(q):
+            lab = lab.lower()
+            if lab in LABELS and val.strip():
+                opts[lab] = val.strip()
+
+    return opts
+
+def answer_to_label(ans, opts):
+    if ans is None:
+        return ""
+    s = norm_text(ans)
+
+    m = re.match(r"^\(?\s*([abcde])\s*\)?$", s)
+    if m:
+        return m.group(1)
+
+    m = re.match(r"^\(?\s*([abcde])\s*\)?[\.\):：\s]", s)
+    if m:
+        return m.group(1)
+
+    ns = norm_text(s)
+    nn = norm_num(s)
+
+    # 精确文本或数值匹配 option 内容
+    for lab, val in opts.items():
+        if norm_text(val) == ns:
+            return lab
+        if norm_num(val) and norm_num(val) == nn:
+            return lab
+
+    # 包含匹配，谨慎兜底
+    for lab, val in opts.items():
+        nv = norm_text(val)
+        if nv and (nv in ns or ns in nv):
+            return lab
+
+    return ""
+
+def extract_answer(r):
+    for k in ["answer", "final_answer", "pred_answer", "prediction", "extracted_answer"]:
+        if r.get(k) is not None:
+            return r.get(k)
+
+    text = ""
+    for k in ["trajectory", "text", "reasoning", "output", "completion", "response"]:
+        if r.get(k):
+            text = str(r[k])
+            break
+
+    for p in [
+        r"Final Answer\s*[:：]\s*([^\n]+)",
+        r"Answer\s*[:：]\s*([^\n]+)",
+        r"答案\s*[:：]\s*([^\n]+)",
+    ]:
+        m = re.findall(p, text, flags=re.I)
+        if m:
+            return m[-1]
+
+    return text[-300:]
+
+def majority(xs):
+    xs = [x for x in xs if x]
+    if not xs:
+        return ""
+    c = Counter(xs)
+    return sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+
+def eval_method(name, pred_by_sid, base_by_sid, gold_by_sid, n_samples, target_ids, cost_by_sid):
+    changed = fixed = broken = net = 0
+    for sid in target_ids:
+        base = base_by_sid.get(sid, "")
+        pred = pred_by_sid.get(sid, base)
+        gold = gold_by_sid.get(sid, "")
+
+        base_ok = int(base == gold and gold != "")
+        pred_ok = int(pred == gold and gold != "")
+
+        if pred != base:
+            changed += 1
+            if base_ok == 0 and pred_ok == 1:
+                fixed += 1
+            if base_ok == 1 and pred_ok == 0:
+                broken += 1
+
+    net = fixed - broken
+    base_acc = sum(1 for sid in target_ids if base_by_sid.get(sid) == gold_by_sid.get(sid) and gold_by_sid.get(sid)) / n_samples
+    final_acc = base_acc + net / n_samples
+    gain = final_acc - base_acc
+    total_extra = sum(cost_by_sid.get(sid, 0.0) for sid in target_ids)
+    extra_per_target = total_extra / max(len(target_ids), 1)
+    extra_per_sample = total_extra / n_samples
+    repair_p = fixed / max(fixed + broken, 1)
+    harm = broken / max(changed, 1)
+
+    return {
+        "method": name,
+        "base_acc": f"{base_acc:.4f}",
+        "final_acc": f"{final_acc:.4f}",
+        "gain": f"{gain:.4f}",
+        "n_eval": len(target_ids),
+        "changed": changed,
+        "fixed": fixed,
+        "broken": broken,
+        "net": net,
+        "extra_per_target": f"{extra_per_target:.4f}",
+        "extra_per_sample": f"{extra_per_sample:.4f}",
+        "repair_precision": f"{repair_p:.4f}",
+        "harm_rate": f"{harm:.4f}",
+    }
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--name", required=True)
+    ap.add_argument("--scope", required=True)
+    ap.add_argument("--base_details", required=True)
+    ap.add_argument("--extra_jsonls", nargs="+", required=True)
+    ap.add_argument("--ours_json", required=True)
+    ap.add_argument("--n_samples", type=int, default=500)
+    ap.add_argument("--out_csv", required=True)
+    ap.add_argument("--out_md", required=True)
+    args = ap.parse_args()
+
+    scope_rows = [json.loads(x) for x in open(args.scope, encoding="utf-8") if x.strip()]
+    target_ids = [get_sid(r) for r in scope_rows]
+    row_by_sid = {get_sid(r): r for r in scope_rows}
+
+    opts_by_sid = {sid: parse_options(r) for sid, r in row_by_sid.items()}
+
+    gold_by_sid = {}
+    for sid, r in row_by_sid.items():
+        opts = opts_by_sid[sid]
+        gold_raw = r.get("gold_answer") or r.get("answer") or r.get("correct") or r.get("label")
+        gold_by_sid[sid] = answer_to_label(gold_raw, opts)
+
+    # base answers
+    base_rows = [json.loads(x) for x in open(args.base_details, encoding="utf-8") if x.strip()]
+    base_by_sid = {}
+    for r in base_rows:
+        sid = get_sid(r)
+        if sid not in row_by_sid:
+            continue
+        opts = opts_by_sid[sid]
+        ans_list = r.get("answers_norm") or r.get("answers") or []
+        labs = [answer_to_label(a, opts) for a in ans_list]
+        maj = answer_to_label(r.get("majority_answer"), opts) or majority(labs)
+        base_by_sid[sid] = maj
+
+    # 若某些 base 缺失，用空补
+    for sid in target_ids:
+        base_by_sid.setdefault(sid, "")
+
+    extra_by_sid = defaultdict(list)
+    for fp in args.extra_jsonls:
+        with open(fp, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                r = json.loads(line)
+                sid = get_sid(r)
+                if sid not in row_by_sid:
+                    continue
+                lab = answer_to_label(extract_answer(r), opts_by_sid[sid])
+                if lab:
+                    extra_by_sid[sid].append(lab)
+
+    rows = []
+
+    # Base-current
+    rows.append(eval_method(
+        "Base-current",
+        dict(base_by_sid),
+        base_by_sid,
+        gold_by_sid,
+        args.n_samples,
+        target_ids,
+        {sid: 0.0 for sid in target_ids},
+    ))
+
+    # SC / CISC-support
+    for k in [4, 8, 12]:
+        pred = {}
+        cost = {}
+        for sid in target_ids:
+            cand = extra_by_sid.get(sid, [])[:k]
+            pred[sid] = majority(cand) or base_by_sid.get(sid, "")
+            cost[sid] = min(k, len(extra_by_sid.get(sid, [])))
+        rows.append(eval_method(f"SC@{k}", pred, base_by_sid, gold_by_sid, args.n_samples, target_ids, cost))
+        rows.append(eval_method(f"CISC_support_proxy@{k}", pred, base_by_sid, gold_by_sid, args.n_samples, target_ids, cost))
+
+    # ESC
+    for k in [4, 8, 12]:
+        for w in [2, 3, 4]:
+            pred = {}
+            cost = {}
+            for sid in target_ids:
+                counts = Counter()
+                used = 0
+                chosen = ""
+                for lab in extra_by_sid.get(sid, [])[:k]:
+                    used += 1
+                    counts[lab] += 1
+                    if counts[lab] >= w:
+                        chosen = lab
+                        break
+                if not chosen:
+                    chosen = majority(extra_by_sid.get(sid, [])[:k]) or base_by_sid.get(sid, "")
+                    used = min(k, len(extra_by_sid.get(sid, [])))
+                pred[sid] = chosen
+                cost[sid] = used
+            rows.append(eval_method(f"ESC@{k}_w{w}", pred, base_by_sid, gold_by_sid, args.n_samples, target_ids, cost))
+
+    # Ours row
+    od = json.load(open(args.ours_json, encoding="utf-8"))
+    obase = od.get("base_acc", od.get("base_accuracy", None))
+    ofinal = od.get("final_acc", od.get("accuracy", od.get("acc", None)))
+    ogain = od.get("gain", None)
+    if ogain is None and obase is not None and ofinal is not None:
+        ogain = ofinal - obase
+    on_eval = int(od.get("n_eval", od.get("target_n", len(target_ids))))
+    ochanged = int(od.get("changed", 0))
+    ofixed = int(od.get("fixed", 0))
+    obroken = int(od.get("broken", 0))
+    onet = int(od.get("net", ofixed - obroken))
+    oextra_t = 12.0
+    oextra_s = oextra_t * on_eval / args.n_samples
+    rows.append({
+        "method": "Recorded-Ours",
+        "base_acc": f"{float(obase):.4f}",
+        "final_acc": f"{float(ofinal):.4f}",
+        "gain": f"{float(ogain):.4f}",
+        "n_eval": on_eval,
+        "changed": ochanged,
+        "fixed": ofixed,
+        "broken": obroken,
+        "net": onet,
+        "extra_per_target": f"{oextra_t:.4f}",
+        "extra_per_sample": f"{oextra_s:.4f}",
+        "repair_precision": f"{ofixed / max(ofixed + obroken, 1):.4f}",
+        "harm_rate": f"{obroken / max(ochanged, 1):.4f}",
+    })
+
+    rows.sort(key=lambda r: (float(r["final_acc"]), -float(r["extra_per_sample"])), reverse=True)
+
+    out_csv = Path(args.out_csv)
+    out_md = Path(args.out_md)
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    fields = ["method","base_acc","final_acc","gain","n_eval","changed","fixed","broken","net","extra_per_target","extra_per_sample","repair_precision","harm_rate"]
+    with out_csv.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+    lines = []
+    lines.append(f"# MathQA OptionMap Baselines: {args.name}")
+    lines.append("")
+    lines.append("| Method | Base Acc | Final Acc | ΔAcc | n_eval | Changed | Fixed | Broken | Net | Extra/Target | Extra/Sample | Repair-P | Harm |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    for r in rows:
+        lines.append(
+            f"| {r['method']} | {r['base_acc']} | {r['final_acc']} | {r['gain']} | "
+            f"{r['n_eval']} | {r['changed']} | {r['fixed']} | {r['broken']} | {r['net']} | "
+            f"{r['extra_per_target']} | {r['extra_per_sample']} | {r['repair_precision']} | {r['harm_rate']} |"
+        )
+    out_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    print("saved:", out_csv)
+    print("saved:", out_md)
+
+if __name__ == "__main__":
+    main()
