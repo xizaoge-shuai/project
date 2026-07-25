@@ -278,15 +278,7 @@ def main() -> None:
     parser.add_argument("--trajectories", required=True)
     parser.add_argument("--repair_jsonl", required=True)
     parser.add_argument("--generator_config", required=True)
-    parser.add_argument("--dataset", default="gsm8k", choices=[
-            "gsm8k",
-            "strategyqa",
-            "hotpotqa",
-            "svamp",
-            "asdiv",
-            "math500",
-            "mathqa"
-        ])
+    parser.add_argument("--dataset", default="gsm8k", choices=["gsm8k", "strategyqa", "hotpotqa"])
     parser.add_argument("--trigger", default="all_disagree", choices=[
         "all_disagree",
         "has_disagreement",

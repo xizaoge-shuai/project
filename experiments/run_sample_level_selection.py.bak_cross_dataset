@@ -100,15 +100,7 @@ def main() -> None:
     parser.add_argument("--predictions", required=True, help="Prefix-level PCE predictions jsonl.")
     parser.add_argument("--trajectories", required=True, help="Trajectory bank jsonl.")
     parser.add_argument("--repair_jsonl", default=None, help="Optional safe local rewrite result jsonl.")
-    parser.add_argument("--dataset", default="gsm8k", choices=[
-            "gsm8k",
-            "strategyqa",
-            "hotpotqa",
-            "svamp",
-            "asdiv",
-            "math500",
-            "mathqa"
-        ])
+    parser.add_argument("--dataset", default="gsm8k", choices=["gsm8k", "strategyqa", "hotpotqa"])
     parser.add_argument("--out", default=None)
     parser.add_argument("--details_out", default=None)
     args = parser.parse_args()

@@ -327,15 +327,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/model/pce_bert.yaml")
     parser.add_argument(
-        "--dataset", required=True, choices=[
-            "gsm8k",
-            "strategyqa",
-            "hotpotqa",
-            "svamp",
-            "asdiv",
-            "math500",
-            "mathqa"
-        ]
+        "--dataset", required=True, choices=["gsm8k", "strategyqa", "hotpotqa"]
     )
     parser.add_argument(
         "--level",

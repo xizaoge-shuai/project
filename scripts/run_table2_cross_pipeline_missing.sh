@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd /root/pce_reasoning_project/project
+source /root/miniconda3/etc/profile.d/conda.sh
+conda activate pce
+
+export PYTHONPATH="$PWD:${PYTHONPATH:-}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+
+mkdir -p outputs/metrics/cross_table/table2
+mkdir -p outputs/predictions/cross_table/table2
+
+GEN_CFG=""
+
+for f in \
+  configs/model/generator_llama_local_rewrite.yaml \
+  configs/model/generator_llama.yaml \
+  configs/model/generator_qwen25_7b_ablation.yaml
+do
+  if [ -f "$f" ]; then
+    GEN_CFG="$f"
+    break
+  fi
+done
+
+if [ -z "$GEN_CFG" ]; then
+  echo "[ERROR] generator config missing"
+  exit 1
+fi
+
+run_one () {
+  local DATASET="$1"
+  local MAXTOK="$2"
+
+  local TRAJ="data/processed/trajectories_cross_table/${DATASET}/test.jsonl"
+  local PRED="outputs/predictions/cross_table/coarse/${DATASET}_coarse_light_test.jsonl"
+
+  local WEIGHT_METRIC="outputs/metrics/cross_table/table2/${DATASET}_pce_weight.json"
+  local WEIGHT_DETAILS="outputs/predictions/cross_table/table2/${DATASET}_pce_weight_details.jsonl"
+
+  local CLR_METRIC="outputs/metrics/cross_table/table2/${DATASET}_clr.json"
+  local CLR_JSONL="outputs/predictions/cross_table/table2/${DATASET}_clr.jsonl"
+
+  local CLR_SELECT_METRIC="outputs/metrics/cross_table/table2/${DATASET}_pce_clr.json"
+  local CLR_SELECT_DETAILS="outputs/predictions/cross_table/table2/${DATASET}_pce_clr_details.jsonl"
+
+  local JUDGE_METRIC="outputs/metrics/cross_table/table2/${DATASET}_judge.json"
+  local JUDGE_JSONL="outputs/predictions/cross_table/table2/${DATASET}_judge.jsonl"
+
+  test -f "$TRAJ"
+  test -f "$PRED"
+
+  echo
+  echo "============================================================"
+  echo "[PCE WEIGHT] $DATASET"
+  echo "============================================================"
+
+  python experiments/run_sample_level_selection.py \
+    --predictions "$PRED" \
+    --trajectories "$TRAJ" \
+    --dataset "$DATASET" \
+    --out "$WEIGHT_METRIC" \
+    --details_out "$WEIGHT_DETAILS"
+
+  echo
+  echo "============================================================"
+  echo "[CLR] $DATASET"
+  echo "============================================================"
+
+  python experiments/run_local_rewrite_backtrack.py \
+    --predictions "$PRED" \
+    --trajectories "$TRAJ" \
+    --generator_config "$GEN_CFG" \
+    --dataset "$DATASET" \
+    --tau_trigger 0.46 \
+    --rewrite_window 1 \
+    --max_new_tokens "$MAXTOK" \
+    --require_repairable 0 \
+    --missing_repairable_policy allow \
+    --repair_prob_threshold 0.0 \
+    --max_cases -1 \
+    --out_json "$CLR_METRIC" \
+    --out_jsonl "$CLR_JSONL" \
+    --min_trigger_progress 0.90 \
+    --min_trigger_units 2
+
+  echo
+  echo "============================================================"
+  echo "[PCE WEIGHT + CLR] $DATASET"
+  echo "============================================================"
+
+  python experiments/run_sample_level_selection.py \
+    --predictions "$PRED" \
+    --trajectories "$TRAJ" \
+    --repair_jsonl "$CLR_JSONL" \
+    --dataset "$DATASET" \
+    --out "$CLR_SELECT_METRIC" \
+    --details_out "$CLR_SELECT_DETAILS"
+
+  echo
+  echo "============================================================"
+  echo "[SELECTIVE JUDGE] $DATASET"
+  echo "============================================================"
+
+  python experiments/run_selective_answer_judge.py \
+    --predictions "$PRED" \
+    --trajectories "$TRAJ" \
+    --repair_jsonl "$CLR_JSONL" \
+    --generator_config "$GEN_CFG" \
+    --dataset "$DATASET" \
+    --trigger all_disagree \
+    --margin_threshold 0.30 \
+    --max_new_tokens "$MAXTOK" \
+    --max_cases -1 \
+    --accept_policy final_in_candidates \
+    --use_confidence_in_prompt 0 \
+    --out_jsonl "$JUDGE_JSONL" \
+    --out_json "$JUDGE_METRIC"
+}
+
+run_one svamp 384
+run_one asdiv 384
+run_one math500 1024
+run_one mathqa 768

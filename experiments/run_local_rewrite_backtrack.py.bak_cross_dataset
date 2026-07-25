@@ -429,15 +429,7 @@ def main() -> None:
     parser.add_argument("--trajectories", required=True, help="trajectory bank jsonl")
     parser.add_argument("--generator_config", required=True)
     parser.add_argument(
-        "--dataset", default="gsm8k", choices=[
-            "gsm8k",
-            "strategyqa",
-            "hotpotqa",
-            "svamp",
-            "asdiv",
-            "math500",
-            "mathqa"
-        ]
+        "--dataset", default="gsm8k", choices=["gsm8k", "strategyqa", "hotpotqa"]
     )
     parser.add_argument("--tau_trigger", type=float, default=0.48)
     parser.add_argument("--rewrite_window", type=int, default=1)
