@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 
 from utils.eval_utils import is_correct_prediction
 from experiments.run_local_rewrite_backtrack import build_generator
+from experiments.eval_cross_pce_weighted_selection import clean as cross_clean, ok as cross_ok
 
 
 def read_jsonl(path: str) -> List[Dict[str, Any]]:
@@ -62,10 +63,10 @@ def extract_answer(text: str) -> str:
     for pat in patterns:
         m = re.search(pat, text, flags=re.I)
         if m:
-            return norm_num(m.group(1))
+            return cross_clean(m.group(1))
 
     nums = re.findall(r"[-+]?\d+(?:\.\d+)?", text.replace(",", ""))
-    return norm_num(nums[-1]) if nums else ""
+    return cross_clean(nums[-1]) if nums else ""
 
 
 def extract_answer_from_steps(steps: List[str]) -> str:
@@ -251,7 +252,7 @@ def parse_judge_output(text: str) -> Dict[str, str]:
 
     m = re.search(r"Final Answer\s*:\s*([^\n\r]+)", text, flags=re.I)
     if m:
-        final = norm_num(m.group(1))
+        final = cross_clean(m.group(1))
 
     m = re.search(r"Reason Type\s*:\s*([^\n\r]+)", text, flags=re.I)
     if m:
@@ -284,6 +285,40 @@ def weighted_vote(cands: List[Dict[str, Any]]) -> Tuple[str, float, float, List[
     total = sum(w.values()) or 1.0
     return top_ans, top_score - second, (top_score - second) / total, ranked
 
+
+
+def cross_steps(row):
+    """Support legacy steps and cross-dataset trajectory schemas."""
+    steps = row.get("steps")
+
+    if isinstance(steps, list) and steps:
+        return [str(x) for x in steps]
+
+    text = (
+        row.get("trajectory")
+        or row.get("text")
+        or row.get("response")
+        or row.get("generated_text")
+        or row.get("reasoning")
+        or ""
+    )
+
+    return [str(text)] if str(text).strip() else []
+
+
+def cross_final_answer(row):
+    """Read and normalize the final answer across all five datasets."""
+    direct = row.get("final_answer")
+
+    if direct is None or not str(direct).strip():
+        direct = row.get("answer")
+
+    if direct is not None and str(direct).strip():
+        return cross_clean(direct)
+
+    return cross_clean(
+        extract_answer_from_steps(cross_steps(row))
+    )
 
 def should_trigger(cands: List[Dict[str, Any]], trigger: str, margin_threshold: float) -> bool:
     answers = [c["answer"] for c in cands]
@@ -356,13 +391,13 @@ def main() -> None:
     for tr in traj_rows:
         tid = tr["trajectory_id"]
         sid = tr["sample_id"]
-        gold = str(tr["gold_answer"])
-        before = extract_answer_from_steps(tr.get("steps", []))
+        gold = cross_clean(tr.get("gold_answer", tr.get("answer", "")))
+        before = cross_final_answer(tr)
         after = before
 
         rr = repair_by_tid.get(tid)
         if rr and rr.get("repair_decision") == "REWRITE" and str(rr.get("repaired_final_answer", "")).strip():
-            after = norm_num(rr.get("repaired_final_answer"))
+            after = cross_clean(rr.get("repaired_final_answer"))
 
         score = tail5_score(scores_by_tid, tid)
 
@@ -375,7 +410,7 @@ def main() -> None:
             "answer": after,
             "score": score,
             "text": "\n".join(str(x) for x in tr.get("steps", [])),
-            "ok": int(is_correct_prediction(after, gold, answer_mode=answer_mode)),
+            "ok": int(cross_ok(after, gold)),
         })
 
     if args.target_sample_ids:
@@ -422,16 +457,16 @@ def main() -> None:
 
         orig_weighted_ans, orig_margin_abs, orig_margin_norm, orig_ranked = weighted_vote(orig_cands)
         orig_any_ok = int(any(c["ok"] for c in orig_cands))
-        orig_weighted_ok = int(is_correct_prediction(orig_weighted_ans, gold, answer_mode=answer_mode))
+        orig_weighted_ok = int(cross_ok(orig_weighted_ans, gold))
 
         # current best pipeline: existing selective judge result if available, otherwise weighted vote.
         if sid in current_judge_by_sid:
-            cur_ans = norm_num(current_judge_by_sid[sid].get("final_answer", ""))
+            cur_ans = cross_clean(current_judge_by_sid[sid].get("final_answer", ""))
             current_best_source = "judge"
         else:
             cur_ans = orig_weighted_ans
             current_best_source = "weighted"
-        current_best_ok = int(is_correct_prediction(cur_ans, gold, answer_mode=answer_mode))
+        current_best_ok = int(cross_ok(cur_ans, gold))
 
         extra_cands = []
         for j in range(args.n_extra):
@@ -472,14 +507,14 @@ def main() -> None:
                 "answer": ans,
                 "score": ew,
                 "text": out_text,
-                "ok": int(is_correct_prediction(ans, gold, answer_mode=answer_mode)),
+                "ok": int(cross_ok(ans, gold)),
             })
 
         all_cands = orig_cands + extra_cands
 
         aug_any_ok = int(any(c["ok"] for c in all_cands))
         aug_weighted_ans, aug_margin_abs, aug_margin_norm, aug_ranked = weighted_vote(all_cands)
-        aug_weighted_ok = int(is_correct_prediction(aug_weighted_ans, gold, answer_mode=answer_mode))
+        aug_weighted_ok = int(cross_ok(aug_weighted_ans, gold))
 
         judge_output = ""
         judge_final_ans = ""
@@ -508,7 +543,7 @@ def main() -> None:
                 judge_final_ans = aug_weighted_ans
 
             judge_reason = parsed["reason"]
-            judge_ok = int(is_correct_prediction(judge_final_ans, gold, answer_mode=answer_mode))
+            judge_ok = int(cross_ok(judge_final_ans, gold))
 
         row = {
             "sample_id": sid,
@@ -581,11 +616,11 @@ def main() -> None:
         orig_weighted_ans, _, _, _ = weighted_vote(orig_cands)
 
         if sid in current_judge_by_sid:
-            cur_ans = norm_num(current_judge_by_sid[sid].get("final_answer", ""))
+            cur_ans = cross_clean(current_judge_by_sid[sid].get("final_answer", ""))
         else:
             cur_ans = orig_weighted_ans
 
-        cur_ok = int(is_correct_prediction(cur_ans, gold, answer_mode=answer_mode))
+        cur_ok = int(cross_ok(cur_ans, gold))
         current_correct += cur_ok
 
         if sid in all_rows:

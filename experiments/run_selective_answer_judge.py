@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from utils.eval_utils import is_correct_prediction
+from experiments.eval_cross_pce_weighted_selection import clean as cross_clean, ok as cross_ok
 from experiments.run_local_rewrite_backtrack import build_generator
 
 
@@ -64,8 +65,37 @@ def extract_answer_from_steps(steps: List[str]) -> str:
     return nums[-1] if nums else joined.strip()
 
 
+
+def cross_steps(row: Dict[str, Any]) -> List[str]:
+    """Return reasoning steps for both legacy and cross-dataset schemas."""
+    steps = row.get("steps")
+    if isinstance(steps, list) and steps:
+        return [str(x) for x in steps]
+
+    text = (
+        row.get("trajectory")
+        or row.get("text")
+        or row.get("response")
+        or row.get("generated_text")
+        or row.get("reasoning")
+        or ""
+    )
+    return [str(text)] if str(text).strip() else []
+
+
+def cross_final_answer(row: Dict[str, Any]) -> str:
+    """Read a final answer without assuming the legacy steps schema."""
+    direct = row.get("final_answer")
+    if direct is None or not str(direct).strip():
+        direct = row.get("answer")
+
+    if direct is not None and str(direct).strip():
+        return cross_clean(direct)
+
+    return cross_clean(extract_answer_from_steps(cross_steps(row)))
+
 def traj_order(tid: str) -> int:
-    m = re.search(r"_traj_(\d+)$", str(tid))
+    m = re.search(r"_traj_(\d+)(?:_seed\d+)?$", str(tid))
     return int(m.group(1)) if m else 999999
 
 
@@ -122,7 +152,7 @@ def build_judge_prompt(
     lines.append("Do not invent a new answer.")
     lines.append("Do not choose a candidate only because it has higher confidence.")
     lines.append("Check whether each candidate's reasoning is consistent with the question and arithmetic.")
-    lines.append("If a candidate answer is empty, malformed, or non-numeric, treat it as unreliable.")
+    lines.append("If a candidate answer is empty or malformed, treat it as unreliable.")
     lines.append("")
     lines.append("Question:")
     lines.append(str(question).strip())
@@ -259,7 +289,7 @@ def parse_judge_output(text: str) -> Dict[str, str]:
 
     m = re.search(r"Final Answer\s*:\s*([^\n\r]+)", text, flags=re.I)
     if m:
-        final = norm_num(m.group(1).strip())
+        final = m.group(1).strip()
 
     m = re.search(r"Reason Type\s*:\s*([^\n\r]+)", text, flags=re.I)
     if m:
@@ -324,14 +354,14 @@ def main() -> None:
     for tr in traj_rows:
         tid = tr["trajectory_id"]
         sid = tr["sample_id"]
-        gold = str(tr["gold_answer"])
+        gold = cross_clean(tr.get("gold_answer", tr.get("answer", "")))
 
-        before = norm_num(extract_answer_from_steps(tr.get("steps", [])))
+        before = cross_final_answer(tr)
         after = before
 
         rr = repair_by_tid.get(tid)
         if rr and rr.get("repair_decision") == "REWRITE" and str(rr.get("repaired_final_answer", "")).strip():
-            after = norm_num(rr["repaired_final_answer"])
+            after = cross_clean(rr["repaired_final_answer"])
 
         by_sample[sid].append({
             "sample_id": sid,
@@ -340,8 +370,8 @@ def main() -> None:
             "gold": gold,
             "answer": after,
             "score": score_tail5(scores_by_tid, tid),
-            "steps": tr.get("steps", []),
-            "ok": int(is_correct_prediction(after, gold, answer_mode=answer_mode)),
+            "steps": cross_steps(tr),
+            "ok": int(cross_ok(after, gold)),
         })
 
     existing = {}
@@ -375,7 +405,7 @@ def main() -> None:
 
         gold = rs[0]["gold"]
         weighted_ans, margin_abs, margin_norm, ranked = weighted_vote(rs)
-        weighted_ok = int(is_correct_prediction(weighted_ans, gold, answer_mode=answer_mode))
+        weighted_ok = int(cross_ok(weighted_ans, gold))
         any_ok = int(any(x["ok"] for x in rs))
 
         prompt = build_judge_prompt(
@@ -392,7 +422,7 @@ def main() -> None:
         candidate_answers = {x["answer"] for x in rs}
 
         chosen_label = parsed["chosen_candidate"]
-        parsed_final_ans = parsed["parsed_final_answer"]
+        parsed_final_ans = cross_clean(parsed["parsed_final_answer"])
 
         chosen_ans = label_to_answer.get(chosen_label, "")
 
@@ -435,7 +465,7 @@ def main() -> None:
             accepted = bool(judge_ans)
 
         final_ans = judge_ans if accepted else weighted_ans
-        final_ok = int(is_correct_prediction(final_ans, gold, answer_mode=answer_mode))
+        final_ok = int(cross_ok(final_ans, gold))
 
         row = {
             "sample_id": sid,
@@ -490,7 +520,7 @@ def main() -> None:
         gold = rs[0]["gold"]
 
         weighted_ans, _, _, _ = weighted_vote(rs)
-        weighted_ok = int(is_correct_prediction(weighted_ans, gold, answer_mode=answer_mode))
+        weighted_ok = int(cross_ok(weighted_ans, gold))
 
         base_correct += weighted_ok
         any_correct += int(any(x["ok"] for x in rs))
