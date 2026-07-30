@@ -1,0 +1,12 @@
+name: asdiv
+task: asdiv
+raw_dir: data/raw/asdiv
+processed_dir: data/processed/unified/asdiv
+train_file: null
+validation_file: null
+test_file: data/processed/unified/asdiv/test.jsonl
+answer_type: numeric
+answer_field: answer
+question_field: question
+context_field: context
+id_field: id

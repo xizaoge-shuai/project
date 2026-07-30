@@ -404,15 +404,7 @@ def main() -> None:
     parser.add_argument("--output_dir", default="data/processed/labels_rollout")
     parser.add_argument("--generator_config", required=True)
     parser.add_argument(
-        "--dataset", default="", choices=[
-            "gsm8k",
-            "strategyqa",
-            "hotpotqa",
-            "svamp",
-            "asdiv",
-            "math500",
-            "mathqa"
-        ]
+        "--dataset", default="", choices=["", "gsm8k", "strategyqa", "hotpotqa"]
     )
     parser.add_argument("--num_rollouts", type=int, default=3)
     parser.add_argument("--success_hi", type=float, default=0.67)

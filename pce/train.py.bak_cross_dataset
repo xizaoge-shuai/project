@@ -231,15 +231,7 @@ def main() -> None:
     parser.add_argument(
         "--dataset",
         required=True,
-        choices=[
-            "gsm8k",
-            "strategyqa",
-            "hotpotqa",
-            "svamp",
-            "asdiv",
-            "math500",
-            "mathqa"
-        ],
+        choices=["gsm8k", "strategyqa", "hotpotqa"],
     )
     parser.add_argument(
     "--feature_set",

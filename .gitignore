@@ -55,3 +55,16 @@ Thumbs.db
 # 但如果有些脚本是运行时自动生成的，可以单独忽略它们
 # 例如：
 # scripts/temp_*.sh
+# Supplement release: generated data and artifacts
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+data/processed/
+data/raw/
+models/
+wandb/
+*.pth
+*.ckpt
+*.safetensors

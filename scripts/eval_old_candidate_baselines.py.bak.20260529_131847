@@ -1,0 +1,285 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import argparse
+import csv
+import json
+import re
+from pathlib import Path
+from collections import Counter
+
+
+def read_jsonl(fp):
+    rows = []
+    fp = Path(fp)
+    if not fp.exists():
+        print("[MISSING]", fp)
+        return rows
+    with fp.open("r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                rows.append(json.loads(line))
+    return rows
+
+
+def get_sid(r):
+    for k in ["sample_id", "id", "qid", "question_id"]:
+        if k in r and r[k] is not None:
+            return str(r[k])
+    return None
+
+
+def norm_choice(x):
+    if x is None:
+        return ""
+    s = str(x).strip().lower()
+    m = re.search(r"\(([abcde])\)", s)
+    if m:
+        return m.group(1)
+    m = re.search(r"\b([abcde])\b", s)
+    if m:
+        return m.group(1)
+    return s[:1]
+
+
+def norm_yesno(x):
+    if x is None:
+        return ""
+    s = str(x).strip().lower()
+    if re.search(r"\byes\b", s):
+        return "yes"
+    if re.search(r"\bno\b", s):
+        return "no"
+    return s
+
+
+def norm_numeric(x):
+    if x is None:
+        return ""
+    s = str(x).strip()
+    s = s.replace(",", "").replace("$", "").replace("\\$", "")
+    s = re.sub(r"\\boxed\{([^{}]+)\}", r"\1", s)
+    s = re.sub(r"boxed\{([^{}]+)\}", r"\1", s)
+    nums = re.findall(r"[-+]?\d*\.?\d+(?:/\d+)?", s)
+    if nums:
+        s = nums[-1]
+    if "/" in s:
+        try:
+            a, b = s.split("/", 1)
+            v = float(a) / float(b)
+            return f"{v:.10f}".rstrip("0").rstrip(".")
+        except Exception:
+            pass
+    try:
+        v = float(s)
+        if abs(v - round(v)) < 1e-9:
+            return str(int(round(v)))
+        return f"{v:.10f}".rstrip("0").rstrip(".")
+    except Exception:
+        return re.sub(r"\s+", "", str(x).strip().lower())
+
+
+def norm_answer(x, task_type):
+    if task_type == "choice":
+        return norm_choice(x)
+    if task_type == "yesno":
+        return norm_yesno(x)
+    return norm_numeric(x)
+
+
+def majority(ans):
+    ans = [a for a in ans if a]
+    if not ans:
+        return ""
+    cnt = Counter(ans)
+    first = {}
+    for i, a in enumerate(ans):
+        if a not in first:
+            first[a] = i
+    return sorted(cnt.items(), key=lambda kv: (-kv[1], first[kv[0]]))[0][0]
+
+
+def support_top(ans):
+    return majority(ans)
+
+
+def esc_predict(cands, k, w):
+    used = cands[:min(k, len(cands))]
+    if not used:
+        return "", 0
+    for i in range(w, len(used) + 1):
+        win = used[i-w:i]
+        if len(win) == w and len(set(win)) == 1 and win[0]:
+            return win[0], i
+    return majority(used), len(used)
+
+
+def get_recorded_ours(r, task_type, base_pred):
+    # 尽量按“最终输出”字段读取旧结果
+    keys = [
+        "final_guard_answer",
+        "final_answer",
+        "judge_final_answer",
+        "confirm_answer",
+        "seedaware_answer",
+        "orig_majority_guard_answer",
+        "weighted_answer",
+    ]
+    for k in keys:
+        if k in r and r[k] is not None:
+            a = norm_answer(r[k], task_type)
+            if a:
+                return a
+    return base_pred
+
+
+def evaluate_method(rows, task_type, n_samples, base_acc, method_fn):
+    changed = fixed = broken = 0
+    total_extra = 0
+    n_eval = 0
+
+    for r in rows:
+        gold = norm_answer(r.get("gold_answer") or r.get("answer") or r.get("label"), task_type)
+        if not gold:
+            continue
+
+        orig = [norm_answer(x, task_type) for x in (r.get("orig_answers") or r.get("answers") or [])]
+        extra = [norm_answer(x, task_type) for x in (r.get("extra_answers") or [])]
+
+        if not orig and "current_best_answer" in r:
+            orig = [norm_answer(r.get("current_best_answer"), task_type)]
+
+        base_pred = norm_answer(r.get("current_best_answer"), task_type) if r.get("current_best_answer") is not None else majority(orig)
+        if not base_pred:
+            base_pred = majority(orig)
+
+        pred, used = method_fn(r, orig, extra, base_pred, gold)
+        pred = pred or base_pred
+
+        base_ok = int(base_pred == gold)
+        pred_ok = int(pred == gold)
+
+        if pred != base_pred:
+            changed += 1
+            if base_ok == 0 and pred_ok == 1:
+                fixed += 1
+            elif base_ok == 1 and pred_ok == 0:
+                broken += 1
+
+        # extra cost 按超出原始 3 条轨迹的候选数估算
+        total_extra += max(0, used - 3)
+        n_eval += 1
+
+    net = fixed - broken
+    final_acc = float(base_acc) + net / float(n_samples)
+    precision = fixed / max(changed, 1)
+    repair_precision = fixed / max(fixed + broken, 1)
+    harm = broken / max(changed, 1)
+
+    return {
+        "n_eval": n_eval,
+        "final_acc": final_acc,
+        "gain": final_acc - float(base_acc),
+        "changed": changed,
+        "fixed": fixed,
+        "broken": broken,
+        "net": net,
+        "extra_calls": total_extra,
+        "extra_per_target": total_extra / max(n_eval, 1),
+        "extra_per_sample": total_extra / max(n_samples, 1),
+        "precision_changed": precision,
+        "repair_precision": repair_precision,
+        "harm_rate": harm,
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--prediction_file", required=True)
+    ap.add_argument("--dataset", required=True)
+    ap.add_argument("--task_type", choices=["numeric", "choice", "yesno"], default="numeric")
+    ap.add_argument("--n_samples", type=int, required=True)
+    ap.add_argument("--base_acc", type=float, required=True)
+    ap.add_argument("--out_dir", required=True)
+    ap.add_argument("--prefix", required=True)
+    args = ap.parse_args()
+
+    rows = read_jsonl(args.prediction_file)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    methods = []
+
+    def add(name, fn):
+        methods.append((name, fn))
+
+    add("Base-current", lambda r, orig, extra, base, gold: (base, 3))
+    add("CoT@1", lambda r, orig, extra, base, gold: ((orig[0] if orig else base), 1))
+    add("SC@3", lambda r, orig, extra, base, gold: (majority(orig[:3]), 3))
+
+    for k in [4, 8, 12]:
+        add(f"SC@{k}", lambda r, orig, extra, base, gold, k=k: (majority((orig + extra)[:k]), min(k, len(orig + extra))))
+
+    for k in [4, 8, 12]:
+        add(f"CISC_support_proxy@{k}", lambda r, orig, extra, base, gold, k=k: (support_top((orig + extra)[:k]), min(k, len(orig + extra))))
+
+    for k in [4, 8, 12]:
+        for w in [2, 3, 4]:
+            add(f"ESC@{k}_w{w}", lambda r, orig, extra, base, gold, k=k, w=w: esc_predict((orig + extra), k, w))
+
+    add("Recorded-Ours", lambda r, orig, extra, base, gold: (get_recorded_ours(r, args.task_type, base), len(orig + extra)))
+
+    results = []
+    for name, fn in methods:
+        d = evaluate_method(rows, args.task_type, args.n_samples, args.base_acc, fn)
+        d["method"] = name
+        d["dataset"] = args.dataset
+        d["base_acc"] = args.base_acc
+        d["prediction_file"] = args.prediction_file
+        results.append(d)
+
+    results.sort(key=lambda x: (-x["final_acc"], x["extra_per_sample"], x["harm_rate"]))
+
+    csv_fp = out_dir / f"{args.prefix}_old_candidate_baselines.csv"
+    md_fp = out_dir / f"{args.prefix}_old_candidate_baselines.md"
+
+    fields = [
+        "dataset", "method", "base_acc", "final_acc", "gain", "n_eval",
+        "changed", "fixed", "broken", "net",
+        "extra_calls", "extra_per_target", "extra_per_sample",
+        "precision_changed", "repair_precision", "harm_rate", "prediction_file"
+    ]
+
+    with csv_fp.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for r in results:
+            w.writerow({k: r.get(k, "") for k in fields})
+
+    def fmt(x):
+        try:
+            return f"{float(x):.4f}"
+        except Exception:
+            return str(x)
+
+    lines = []
+    lines.append(f"# Old-format Candidate Baselines: {args.prefix}")
+    lines.append("")
+    lines.append("| Method | Base Acc | Final Acc | ΔAcc | n_eval | Changed | Fixed | Broken | Net | Extra/Target | Extra/Sample | Precision | Repair-P | Harm |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    for r in results:
+        lines.append(
+            f"| {r['method']} | {fmt(r['base_acc'])} | {fmt(r['final_acc'])} | {fmt(r['gain'])} | "
+            f"{r['n_eval']} | {r['changed']} | {r['fixed']} | {r['broken']} | {r['net']} | "
+            f"{fmt(r['extra_per_target'])} | {fmt(r['extra_per_sample'])} | "
+            f"{fmt(r['precision_changed'])} | {fmt(r['repair_precision'])} | {fmt(r['harm_rate'])} |"
+        )
+
+    md_fp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("saved:", csv_fp)
+    print("saved:", md_fp)
+    print(md_fp.read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    main()
